@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -15,12 +17,26 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/chingjustwe/llm-interceptor/internal/api"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
+	"github.com/chingjustwe/llm-interceptor/internal/types"
 )
+
+//go:embed ui/dist/index.html
+//go:embed ui/dist/assets
+var uiFS embed.FS
+
+func staticFileServer() http.Handler {
+	sub, err := fs.Sub(uiFS, "ui/dist")
+	if err != nil {
+		log.Fatalf("failed to get ui sub fs: %v", err)
+	}
+	return http.FileServer(http.FS(sub))
+}
 
 func main() {
 	cfgPath := "config.yaml"
@@ -71,6 +87,13 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
+
+	// API routes
+	apiHandler := api.NewHandler(store)
+	apiHandler.Register(r)
+
+	broker := api.NewSSEBroker()
+	r.Get("/api/events", broker.ServeHTTP)
 
 	r.Post("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -154,6 +177,7 @@ func main() {
 				respCtx.ToolCalls = append(respCtx.ToolCalls, plugin.ToolCall(tc))
 			}
 			respCtx.StopReason = stopReason
+			respCtx.Body = pr.Body
 
 			for k, v := range pr.Headers {
 				w.Header().Set(k, v)
@@ -168,6 +192,31 @@ func main() {
 		if err := disp.ExecuteOnResponse(&respCtx); err != nil {
 			log.Printf("plugin response error: %v", err)
 		}
+
+		// Save request to storage (async, best-effort)
+		go func() {
+			storedReq := &types.StoredRequest{
+				ID:        reqCtx.ID,
+				SessionID: reqCtx.SessionID,
+				Model:     respCtx.Model,
+				Method:    reqCtx.Method,
+				Path:      reqCtx.Path,
+				Request:   string(body),
+				Response:  string(respCtx.Body),
+				Usage: types.TokenUsage{
+					InputTokens:         respCtx.Usage.InputTokens,
+					OutputTokens:        respCtx.Usage.OutputTokens,
+					CacheReadTokens:     respCtx.Usage.CacheReadTokens,
+					CacheCreationTokens: respCtx.Usage.CacheCreationTokens,
+				},
+				DurationMs: respCtx.DurationMs,
+				StatusCode: respCtx.StatusCode,
+				CreatedAt:  time.Now().UnixMilli(),
+			}
+			if err := store.SaveRequest(context.Background(), storedReq); err != nil {
+				log.Printf("failed to save request: %v", err)
+			}
+		}()
 	})
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -175,11 +224,8 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Catch-all: forward all other requests transparently
-	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("forwarding %s %s", r.Method, r.URL.Path)
-		target.Forward(w, r)
-	})
+	// SPA fallback for all non-API routes
+	r.Handle("/*", staticFileServer())
 
 	server := &http.Server{
 		Addr:    cfg.Listen,

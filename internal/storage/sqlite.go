@@ -74,7 +74,7 @@ func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string
 		return nil, err
 	}
 	defer rows.Close()
-	var results []types.StoredRequest
+	results := make([]types.StoredRequest, 0)
 	for rows.Next() {
 		var r types.StoredRequest
 		if err := rows.Scan(&r.ID, &r.SessionID, &r.Model, &r.Method, &r.Path,
@@ -136,7 +136,7 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 		return nil, err
 	}
 	defer rows.Close()
-	var results []types.StoredRequest
+	results := make([]types.StoredRequest, 0)
 	for rows.Next() {
 		var r types.StoredRequest
 		if err := rows.Scan(&r.ID, &r.SessionID, &r.Model, &r.Method, &r.Path,

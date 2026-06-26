@@ -28,3 +28,10 @@ Thumbs.db
 
 # Dependencies
 node_modules/
+
+# UI build output
+cmd/llm-interceptor/ui/dist/
+cmd/llm-interceptor/ui/src/*.js
+
+# Test artifacts
+test-results/
