@@ -1,5 +1,5 @@
 # Binaries
-llm-interceptor
+/llm-interceptor
 *.exe
 *.dll
 *.so

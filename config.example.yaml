@@ -1,0 +1,15 @@
+listen: "127.0.0.1:8080"
+upstream: "https://api.anthropic.com"
+metric_prefix: "llm_proxy."
+
+log:
+  request_body: false
+  response_body: false
+
+storage:
+  type: sqlite
+  sqlite:
+    path: "~/.llm-interceptor/data.db"
+
+state_store:
+  type: memory
