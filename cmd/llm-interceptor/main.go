@@ -20,6 +20,7 @@ import (
 	"github.com/chingjustwe/llm-interceptor/internal/api"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-interceptor/internal/plugins"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
@@ -74,8 +75,22 @@ func main() {
 	}
 	_ = st
 
-	// Initialize proxy
-	disp := plugin.NewDispatcher(nil)
+	// Initialize plugins
+	ctx := context.Background()
+	var pluginList []plugin.Plugin
+	if cfg.Plugins.OTelExporter.Enabled {
+		exporter, err := plugins.NewOTelExporter(ctx, plugins.OTelExporterConfig{
+			Endpoint:     cfg.Plugins.OTelExporter.Endpoint,
+			Headers:      cfg.Plugins.OTelExporter.Headers,
+			MetricPrefix: cfg.MetricPrefix,
+		})
+		if err != nil {
+			log.Fatalf("failed to init otel exporter: %v", err)
+		}
+		pluginList = append(pluginList, exporter)
+		defer exporter.Shutdown(ctx)
+	}
+	disp := plugin.NewDispatcher(pluginList)
 
 	target, err := proxy.New("anthropic", cfg.Upstream)
 	if err != nil {

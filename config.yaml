@@ -1,5 +1,5 @@
-listen: "127.0.0.1:8080"
-upstream: "https://api.anthropic.com"
+listen: "127.0.0.1:8081"
+upstream: "https://api.deepseek.com/anthropic"
 metric_prefix: "llm_proxy."
 
 log:
