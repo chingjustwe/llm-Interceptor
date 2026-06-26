@@ -75,8 +75,6 @@ func main() {
 	default:
 		log.Fatalf("unknown storage type: %s", cfg.Storage.Type)
 	}
-	_ = store
-
 	// Initialize state store
 	var st state.Backend
 	switch cfg.StateStore.Type {
@@ -96,8 +94,6 @@ func main() {
 	default:
 		log.Fatalf("unknown state store type: %s", cfg.StateStore.Type)
 	}
-	_ = st
-
 	// Initialize plugins
 	ctx := context.Background()
 	var pluginList []plugin.Plugin
@@ -149,7 +145,7 @@ func main() {
 	r.Use(middleware.RealIP)
 
 	// API routes
-	apiHandler := api.NewHandler(store)
+	apiHandler := api.NewHandler(store, st)
 	apiHandler.Register(r)
 
 	broker := api.NewSSEBroker()

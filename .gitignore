@@ -30,8 +30,8 @@ Thumbs.db
 node_modules/
 
 # UI build output
-cmd/llm-interceptor/ui/dist/
-cmd/llm-interceptor/ui/src/*.js
+ui/dist/
+ui/src/*.js
 
 # Test artifacts
 test-results/
