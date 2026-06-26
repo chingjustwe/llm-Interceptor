@@ -80,9 +80,12 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 		return nil, fmt.Errorf("create trace exporter: %w", err)
 	}
 
+	spanLimits := sdktrace.NewSpanLimits()
+	spanLimits.AttributeValueLengthLimit = 65535
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSpanLimits(spanLimits),
 	)
 	otel.SetTracerProvider(tp)
 
