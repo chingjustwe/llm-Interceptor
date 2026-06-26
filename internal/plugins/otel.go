@@ -34,6 +34,10 @@ type OTelExporter struct {
 	tracer trace.Tracer
 	meter  metric.Meter
 
+	// attrLimit is the maximum length in bytes for string attribute values.
+	// Values longer than this are truncated with a total-length indicator.
+	attrLimit int
+
 	// Metrics
 	tokenInputTotal  metric.Int64Counter
 	tokenOutputTotal metric.Int64Counter
@@ -87,12 +91,9 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 		return nil, fmt.Errorf("create trace exporter: %w", err)
 	}
 
-	spanLimits := sdktrace.NewSpanLimits()
-	spanLimits.AttributeValueLengthLimit = attrLimit
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
-		sdktrace.WithSpanLimits(spanLimits),
 	)
 	otel.SetTracerProvider(tp)
 
@@ -117,11 +118,12 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 	otel.SetMeterProvider(mp)
 
 	e := &OTelExporter{
-		name:   "otel-exporter",
-		tp:     tp,
-		mp:     mp,
-		tracer: tp.Tracer("llm-interceptor"),
-		meter:  mp.Meter("llm-interceptor"),
+		name:      "otel-exporter",
+		tp:        tp,
+		mp:        mp,
+		tracer:    tp.Tracer("llm-interceptor"),
+		meter:     mp.Meter("llm-interceptor"),
+		attrLimit: attrLimit,
 	}
 
 	e.tokenInputTotal = mustMetric(e.meter.Int64Counter(prefix+"llm.token.input_total",
@@ -174,7 +176,7 @@ func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 		attribute.String("gen_ai.system", "anthropic"),
 		attribute.String("gen_ai.conversation.id", ctx.SessionID),
 		attribute.String("llm_proxy.agent_id", ctx.AgentID),
-		attribute.String("gen_ai.request.content", extractUserContent(ctx.Body)),
+		attribute.String("gen_ai.request.content", truncateString(extractUserContent(ctx.Body), o.attrLimit)),
 	)
 	ctx.Metadata["otel_span"] = span
 	return nil, nil
@@ -244,8 +246,6 @@ func extractText(content any) string {
 	}
 }
 
-const maxResponseBodyAttr = 8192
-
 // OnResponse closes the OpenTelemetry span created in OnRequest, setting
 // LLM-specific attributes (model, token usage, stop reason, duration,
 // request/response content) and recording metric counters.
@@ -258,7 +258,7 @@ func (o *OTelExporter) OnResponse(ctx *plugin.ResponseContext) error {
 
 	span.SetAttributes(
 		attribute.String("gen_ai.response.model", ctx.Model),
-		attribute.String("gen_ai.response.content", truncateBody(ctx.Body, maxResponseBodyAttr)),
+		attribute.String("gen_ai.response.content", truncateBody(ctx.Body, o.attrLimit)),
 		attribute.Int("gen_ai.usage.input_tokens", ctx.Usage.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", ctx.Usage.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_read_input_tokens", ctx.Usage.CacheReadTokens),
@@ -295,13 +295,17 @@ func (o *OTelExporter) OnResponse(ctx *plugin.ResponseContext) error {
 }
 
 func truncateBody(body []byte, maxLen int) string {
-	if len(body) == 0 {
+	return truncateString(string(body), maxLen)
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) == 0 || maxLen <= 0 {
 		return ""
 	}
-	if len(body) <= maxLen {
-		return string(body)
+	if len(s) <= maxLen {
+		return s
 	}
-	return string(body[:maxLen]) + "... (truncated)"
+	return s[:maxLen] + "..."
 }
 
 // Shutdown flushes and shuts down both the tracer provider and meter provider.
