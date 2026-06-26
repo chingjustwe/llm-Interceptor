@@ -170,9 +170,9 @@ func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 	return nil, nil
 }
 
-// lastTurnRequest parses the request body and returns only the last user
-// message (along with system prompt and tools) as a compact JSON string.
-// This avoids sending the full conversation history to the trace backend.
+// lastTurnRequest parses the request body and returns only the last message
+// as a compact JSON string. System prompts and tools are excluded since they
+// repeat on every request and inflate trace attribute size.
 func lastTurnRequest(body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -181,17 +181,11 @@ func lastTurnRequest(body []byte) string {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return string(body)
 	}
-	out := make(map[string]any)
-	if msgs, ok := raw["messages"].([]any); ok && len(msgs) > 0 {
-		out["message"] = msgs[len(msgs)-1]
+	msgs, ok := raw["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return string(body)
 	}
-	if sys, ok := raw["system"]; ok {
-		out["system"] = sys
-	}
-	if tools, ok := raw["tools"]; ok {
-		out["tools"] = tools
-	}
-	b, _ := json.Marshal(out)
+	b, _ := json.Marshal(msgs[len(msgs)-1])
 	return string(b)
 }
 
