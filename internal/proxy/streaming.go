@@ -43,18 +43,63 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 	// suppressing (-1 = none).
 	blockedIdx := -1
 	anyBlocked := false
+	// pendingEvent buffers an "event: xxx" line until its paired "data: "
+	// line is processed. This ensures we never emit an event: line without
+	// its corresponding data: line, which would confuse SSE clients.
+	pendingEvent := ""
+
+	// writePendingAndData writes any buffered event line followed by the
+	// given data line, then clears the buffer.
+	writePendingAndData := func(dataLine string) {
+		if pendingEvent != "" {
+			writeSSE(w, flusher, pendingEvent)
+			pendingEvent = ""
+		}
+		line := dataLine
+		if !strings.HasPrefix(line, "data: ") {
+			line = "data: " + line
+		}
+		writeSSE(w, flusher, line)
+	}
+
+	// flushPending writes any pending event line as an orphan (no paired
+	// data). This should only happen for non-data lines like blank
+	// separators between events.
+	flushPending := func() {
+		if pendingEvent != "" {
+			writeSSE(w, flusher, pendingEvent)
+			pendingEvent = ""
+		}
+	}
+
+	// discardPending drops the buffered event line without writing it.
+	discardPending := func() {
+		pendingEvent = ""
+	}
 
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		if strings.HasPrefix(line, "event: ") {
+			// Buffer this event line. If we already have one buffered,
+			// flush it first (it was orphaned, e.g. event without data).
+			flushPending()
+			pendingEvent = line
+			continue
+		}
+
 		if !strings.HasPrefix(line, "data: ") {
+			// Non-data, non-event line (e.g. blank separator).
+			flushPending()
 			writeSSE(w, flusher, line)
 			continue
 		}
+
 		data := strings.TrimPrefix(line, "data: ")
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(data), &raw); err != nil {
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 			continue
 		}
 		evtType, _ := raw["type"].(string)
@@ -63,7 +108,7 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 		case "content_block_start":
 			block, ok := raw["content_block"].(map[string]any)
 			if !ok {
-				writeSSE(w, flusher, line)
+				writePendingAndData(line)
 				continue
 			}
 			if block["type"] == "tool_use" {
@@ -78,21 +123,21 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 
 				// Check if this tool is blocked by policy.
 				if isToolBlocked != nil && isToolBlocked(tc.Name) {
-					// Suppress this tool_use block: don't forward its events.
-					// We'll inject a text replacement after block_stop.
 					if idx, ok := raw["index"].(float64); ok {
 						blockedIdx = int(idx)
 					}
 					anyBlocked = true
+					discardPending()
 					continue
 				}
 			}
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 
 		case "content_block_delta":
 			if blockedIdx >= 0 {
 				if idx, ok := raw["index"].(float64); ok && int(idx) == blockedIdx {
-					continue // suppress events for the blocked block
+					discardPending()
+					continue
 				}
 			}
 			if delta, ok := raw["delta"].(map[string]any); ok {
@@ -102,22 +147,25 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 					}
 				}
 			}
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 
 		case "content_block_stop":
 			if blockedIdx >= 0 {
 				if idx, ok := raw["index"].(float64); ok && int(idx) == blockedIdx {
-				// The blocked tool_use stream just ended. Replace with
-				// a text block explaining the policy.
-				blockedMsg := "Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."
-				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":%q}}`, blockedIdx, blockedMsg))
-				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
-				respBody.WriteString(blockedMsg)
+					// The blocked tool_use stream just ended. Replace with
+					// a text block explaining the policy.
+					blockedMsg := "Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."
+					discardPending()
+					writeSSE(w, flusher, "event: content_block_start")
+					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":%q}}`, blockedIdx, blockedMsg))
+					writeSSE(w, flusher, "event: content_block_stop")
+					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
+					respBody.WriteString(blockedMsg)
 					blockedIdx = -1
 					continue
 				}
 			}
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 
 		case "message_delta":
 			if anyBlocked {
@@ -144,6 +192,8 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 				// Re-marshal and write the modified message_delta.
 				modified, err := json.Marshal(raw)
 				if err == nil {
+					discardPending()
+					writeSSE(w, flusher, "event: message_delta")
 					writeSSE(w, flusher, "data: "+string(modified))
 				}
 				stopReason = "end_turn"
@@ -169,11 +219,12 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 					finalUsage.CacheCreationTokens = int(v)
 				}
 			}
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 		default:
-			writeSSE(w, flusher, line)
+			writePendingAndData(line)
 		}
 	}
+	flushPending()
 	duration := time.Since(start).Milliseconds()
 	return []byte(respBody.String()), finalUsage, finalToolCalls, stopReason, duration, scanner.Err()
 }

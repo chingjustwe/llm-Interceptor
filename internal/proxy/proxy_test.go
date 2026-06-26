@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,135 @@ func TestProxy_StreamingResponse(t *testing.T) {
 	}
 	if len(tools) != 1 || tools[0].Name != "Read" {
 		t.Fatalf("expected 1 tool_use (Read), got %v", tools)
+	}
+}
+
+func TestStreamAndCollect_BlocksToolUse(t *testing.T) {
+	tests := []struct {
+		name        string
+		isBlocked   func(name string) bool
+		wantStop    string
+		wantBody    string
+		wantTools   int
+		checkOutput func(t *testing.T, output string)
+	}{
+		{
+			name:      "blocked_tool_replaced_with_text",
+			isBlocked: func(name string) bool { return name == "Bash" },
+			wantStop:  "end_turn",
+			wantBody:  "HelloTool call blocked by interceptor policy — the tool you attempted to use is not available in this session.",
+			wantTools: 1,
+			checkOutput: func(t *testing.T, output string) {
+				// Must NOT contain tool_use blocks.
+				if strings.Contains(output, `"type":"tool_use"`) {
+					t.Errorf("output should not contain tool_use, got:\n%s", output)
+				}
+				// Must contain the blocked message.
+				if !strings.Contains(output, "blocked by interceptor policy") {
+					t.Errorf("output should contain blocked message")
+				}
+				// Must have event: lines paired with data: lines.
+				if !strings.Contains(output, "event: content_block_start") {
+					t.Errorf("output should contain event: content_block_start")
+				}
+				if !strings.Contains(output, "event: content_block_stop") {
+					t.Errorf("output should contain event: content_block_stop")
+				}
+				if !strings.Contains(output, `"stop_reason":"end_turn"`) {
+					t.Errorf("output should contain stop_reason end_turn")
+				}
+				// Every data: line must be valid JSON.
+				for _, line := range strings.Split(output, "\n") {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						data := strings.TrimPrefix(trimmed, "data: ")
+						if !json.Valid([]byte(data)) {
+							t.Errorf("invalid JSON in SSE data line: %s", data)
+						}
+					}
+				}
+			},
+		},
+		{
+			name:      "non_blocked_tool_passthrough",
+			isBlocked: func(name string) bool { return false },
+			wantStop:  "tool_use",
+			wantBody:  "Hello",
+			wantTools: 1,
+			checkOutput: func(t *testing.T, output string) {
+				if !strings.Contains(output, `"type":"tool_use"`) {
+					t.Errorf("non-blocked output should contain tool_use")
+				}
+				if !strings.Contains(output, `"stop_reason":"tool_use"`) {
+					t.Errorf("non-blocked output should have stop_reason tool_use")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+
+				// Text block at index 0: "Hello"
+				fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+				flusher.Flush()
+				fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n")
+				flusher.Flush()
+				fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+				flusher.Flush()
+
+				// Tool_use block at index 1: "Bash" (may be blocked)
+				fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}}\n\n")
+				flusher.Flush()
+				fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n")
+				flusher.Flush()
+				fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+				flusher.Flush()
+
+				// Message delta
+				fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n\n")
+				flusher.Flush()
+				fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+				flusher.Flush()
+			}))
+			defer upstream.Close()
+
+			target, err := New("test-block", upstream.URL)
+			if err != nil {
+				t.Fatalf("New failed: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
+				[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+				map[string]string{"x-api-key": "test-key"},
+				rec,
+				tt.isBlocked,
+			)
+			if err != nil {
+				t.Fatalf("HandleRequestStream failed: %v", err)
+			}
+			if string(respBody) != tt.wantBody {
+				t.Fatalf("expected respBody %q, got %q", tt.wantBody, string(respBody))
+			}
+			if stopReason != tt.wantStop {
+				t.Fatalf("expected stop_reason %q, got %q", tt.wantStop, stopReason)
+			}
+			if len(tools) != tt.wantTools {
+				t.Fatalf("expected %d tools, got %d", tt.wantTools, len(tools))
+			}
+			if usage == nil {
+				t.Fatal("expected non-nil usage")
+			}
+			if usage.InputTokens != 10 || usage.OutputTokens != 20 {
+				t.Fatalf("expected usage 10/20, got %d/%d", usage.InputTokens, usage.OutputTokens)
+			}
+			tt.checkOutput(t, rec.Body.String())
+		})
 	}
 }
 
