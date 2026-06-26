@@ -1,3 +1,5 @@
+// Package plugins contains built-in plugin implementations for the LLM Interceptor
+// plugin system. Currently includes an OpenTelemetry exporter for traces and metrics.
 package plugins
 
 import (
@@ -19,12 +21,16 @@ import (
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 )
 
+// OTelExporter implements the Plugin interface to export OpenTelemetry traces
+// and metrics (token counts, request counts, request duration) to an OTLP
+// collector. It creates a span on OnRequest and closes it on OnResponse with
+// all available LLM metadata as attributes.
 type OTelExporter struct {
-	name      string
-	tp        *sdktrace.TracerProvider
-	mp        *sdkmetric.MeterProvider
-	tracer    trace.Tracer
-	meter     metric.Meter
+	name   string
+	tp     *sdktrace.TracerProvider
+	mp     *sdkmetric.MeterProvider
+	tracer trace.Tracer
+	meter  metric.Meter
 
 	// Metrics
 	tokenInputTotal  metric.Int64Counter
@@ -33,6 +39,8 @@ type OTelExporter struct {
 	requestDuration  metric.Int64Histogram
 }
 
+// OTelExporterConfig configures the OTLP exporter endpoint, headers, metric
+// prefix, and service name for OpenTelemetry traces and metrics.
 type OTelExporterConfig struct {
 	Endpoint     string
 	Headers      map[string]string
@@ -40,6 +48,9 @@ type OTelExporterConfig struct {
 	ServiceName  string
 }
 
+// NewOTelExporter creates an OTelExporter, initializing the OTLP trace and
+// metric exporters, meter provider, tracer provider, and common LLM metrics
+// (input/output tokens, request count, request duration histogram).
 func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter, error) {
 	prefix := cfg.MetricPrefix
 	if prefix == "" {
@@ -116,6 +127,8 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 	return e, nil
 }
 
+// mustMetric panics if creating an Int64Counter fails. Used for compile-time-like
+// safety during meter initialization.
 func mustMetric(m metric.Int64Counter, err error) metric.Int64Counter {
 	if err != nil {
 		panic("create metric: " + err.Error())
@@ -123,6 +136,8 @@ func mustMetric(m metric.Int64Counter, err error) metric.Int64Counter {
 	return m
 }
 
+// mustHistogram panics if creating an Int64Histogram fails. Used for compile-time-like
+// safety during meter initialization.
 func mustHistogram(m metric.Int64Histogram, err error) metric.Int64Histogram {
 	if err != nil {
 		panic("create histogram: " + err.Error())
@@ -130,8 +145,14 @@ func mustHistogram(m metric.Int64Histogram, err error) metric.Int64Histogram {
 	return m
 }
 
+const maxRequestBodyAttr = 4096
+
+// Name returns "otel-exporter" as the plugin identifier.
 func (o *OTelExporter) Name() string { return o.name }
 
+// OnRequest starts an OpenTelemetry span and attaches LLM metadata (agent,
+// session, request body) as span attributes. The span is stored in
+// ctx.Metadata for retrieval in OnResponse.
 func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult, error) {
 	if o.tracer == nil {
 		return nil, nil
@@ -142,11 +163,17 @@ func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 		attribute.String("gen_ai.system", "anthropic"),
 		attribute.String("gen_ai.conversation.id", ctx.SessionID),
 		attribute.String("llm_proxy.agent_id", ctx.AgentID),
+		attribute.String("gen_ai.request.content", truncateBody(ctx.Body, maxRequestBodyAttr)),
 	)
 	ctx.Metadata["otel_span"] = span
 	return nil, nil
 }
 
+const maxResponseBodyAttr = 8192
+
+// OnResponse closes the OpenTelemetry span created in OnRequest, setting
+// LLM-specific attributes (model, token usage, stop reason, duration,
+// request/response content) and recording metric counters.
 func (o *OTelExporter) OnResponse(ctx *plugin.ResponseContext) error {
 	span, ok := ctx.Metadata["otel_span"].(trace.Span)
 	if !ok {
@@ -156,6 +183,7 @@ func (o *OTelExporter) OnResponse(ctx *plugin.ResponseContext) error {
 
 	span.SetAttributes(
 		attribute.String("gen_ai.response.model", ctx.Model),
+		attribute.String("gen_ai.response.content", truncateBody(ctx.Body, maxResponseBodyAttr)),
 		attribute.Int("gen_ai.usage.input_tokens", ctx.Usage.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", ctx.Usage.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_read_input_tokens", ctx.Usage.CacheReadTokens),
@@ -191,6 +219,17 @@ func (o *OTelExporter) OnResponse(ctx *plugin.ResponseContext) error {
 	return nil
 }
 
+func truncateBody(body []byte, maxLen int) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if len(body) <= maxLen {
+		return string(body)
+	}
+	return string(body[:maxLen]) + "... (truncated)"
+}
+
+// Shutdown flushes and shuts down both the tracer provider and meter provider.
 func (o *OTelExporter) Shutdown(ctx context.Context) error {
 	_ = o.tp.Shutdown(ctx)
 	return o.mp.Shutdown(ctx)
