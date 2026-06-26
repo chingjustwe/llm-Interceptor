@@ -114,6 +114,27 @@ func main() {
 		pluginList = append(pluginList, exporter)
 		defer exporter.Shutdown(ctx)
 	}
+	if cfg.Plugins.CostTracker.Enabled {
+		pluginList = append(pluginList, plugins.NewCostTracker(st))
+	}
+	if cfg.Plugins.Budget.MaxCostPerSession > 0 || cfg.Plugins.Budget.MaxCostPerDay > 0 {
+		pluginList = append(pluginList, plugins.NewBudgetPlugin(st,
+			cfg.Plugins.Budget.MaxCostPerSession,
+			cfg.Plugins.Budget.MaxCostPerDay,
+		))
+	}
+	if cfg.Plugins.RateLimit.RequestsPerMinute > 0 || cfg.Plugins.RateLimit.TokensPerMinute > 0 {
+		pluginList = append(pluginList, plugins.NewRateLimitPlugin(st,
+			cfg.Plugins.RateLimit.RequestsPerMinute,
+			cfg.Plugins.RateLimit.TokensPerMinute,
+		))
+	}
+	if len(cfg.Plugins.ToolPolicy.BlockedTools) > 0 || len(cfg.Plugins.ToolPolicy.AllowedTools) > 0 {
+		pluginList = append(pluginList, plugins.NewToolPolicyPlugin(
+			cfg.Plugins.ToolPolicy.BlockedTools,
+			cfg.Plugins.ToolPolicy.AllowedTools,
+		))
+	}
 	disp := plugin.NewDispatcher(pluginList)
 
 	target, err := proxy.New("anthropic", cfg.Upstream)

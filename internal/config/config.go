@@ -25,7 +25,36 @@ type Config struct {
 
 // PluginConfig holds configuration for all built-in plugins.
 type PluginConfig struct {
-	OTelExporter OTelExporterConfig `yaml:"otel-exporter"`
+	OTelExporter OTelExporterConfig      `yaml:"otel-exporter"`
+	CostTracker  CostTrackerPluginConfig `yaml:"cost-tracker"`
+	Budget       BudgetPluginConfig      `yaml:"budget"`
+	RateLimit    RateLimitPluginConfig   `yaml:"rate-limit"`
+	ToolPolicy   ToolPolicyPluginConfig  `yaml:"tool-policy"`
+}
+
+// CostTrackerPluginConfig enables the cost-tracking plugin.
+type CostTrackerPluginConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// BudgetPluginConfig sets per-session and per-day cost limits in USD.
+// Zero values disable the corresponding limit.
+type BudgetPluginConfig struct {
+	MaxCostPerSession float64 `yaml:"max_cost_per_session"`
+	MaxCostPerDay     float64 `yaml:"max_cost_per_day"`
+}
+
+// RateLimitPluginConfig sets request and token rate limits per minute.
+// Zero values disable the corresponding limit.
+type RateLimitPluginConfig struct {
+	RequestsPerMinute int `yaml:"requests_per_minute"`
+	TokensPerMinute   int `yaml:"tokens_per_minute"`
+}
+
+// ToolPolicyPluginConfig defines tool access rules for the tool-policy plugin.
+type ToolPolicyPluginConfig struct {
+	BlockedTools []string `yaml:"blocked_tools"`
+	AllowedTools []string `yaml:"allowed_tools"`
 }
 
 // OTelExporterConfig configures the OpenTelemetry OTLP exporter plugin.

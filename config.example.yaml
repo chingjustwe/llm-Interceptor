@@ -20,3 +20,14 @@ plugins:
     endpoint: "localhost:4318"
     headers: {}
     max_attr_len: 65535
+  cost-tracker:
+    enabled: true
+  budget:
+    max_cost_per_session: 0.50
+    max_cost_per_day: 0
+  rate-limit:
+    requests_per_minute: 60
+    tokens_per_minute: 0
+  tool-policy:
+    blocked_tools: []
+    allowed_tools: []
