@@ -4,6 +4,7 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -145,13 +146,13 @@ func mustHistogram(m metric.Int64Histogram, err error) metric.Int64Histogram {
 	return m
 }
 
-const maxRequestBodyAttr = 4096
-
 // Name returns "otel-exporter" as the plugin identifier.
 func (o *OTelExporter) Name() string { return o.name }
 
 // OnRequest starts an OpenTelemetry span and attaches LLM metadata (agent,
-// session, request body) as span attributes. The span is stored in
+// session, current-turn request) as span attributes. Only the last user
+// message from the messages array is included to avoid sending full
+// conversation history to the trace backend. The span is stored in
 // ctx.Metadata for retrieval in OnResponse.
 func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult, error) {
 	if o.tracer == nil {
@@ -163,10 +164,35 @@ func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 		attribute.String("gen_ai.system", "anthropic"),
 		attribute.String("gen_ai.conversation.id", ctx.SessionID),
 		attribute.String("llm_proxy.agent_id", ctx.AgentID),
-		attribute.String("gen_ai.request.content", truncateBody(ctx.Body, maxRequestBodyAttr)),
+		attribute.String("gen_ai.request.content", lastTurnRequest(ctx.Body)),
 	)
 	ctx.Metadata["otel_span"] = span
 	return nil, nil
+}
+
+// lastTurnRequest parses the request body and returns only the last user
+// message (along with system prompt and tools) as a compact JSON string.
+// This avoids sending the full conversation history to the trace backend.
+func lastTurnRequest(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return string(body)
+	}
+	out := make(map[string]any)
+	if msgs, ok := raw["messages"].([]any); ok && len(msgs) > 0 {
+		out["message"] = msgs[len(msgs)-1]
+	}
+	if sys, ok := raw["system"]; ok {
+		out["system"] = sys
+	}
+	if tools, ok := raw["tools"]; ok {
+		out["tools"] = tools
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }
 
 const maxResponseBodyAttr = 8192

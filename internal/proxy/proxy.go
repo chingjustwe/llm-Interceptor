@@ -1,3 +1,6 @@
+// Package proxy implements an HTTP passthrough proxy that forwards LLM API requests
+// to upstream providers. It supports both synchronous and streaming (SSE) modes,
+// and provides utilities for extracting usage data and tool calls from responses.
 package proxy
 
 import (
@@ -10,6 +13,8 @@ import (
 	"time"
 )
 
+// PluginResponse wraps the upstream provider's response, including status code,
+// body, headers, measured duration, and parsed usage data.
 type PluginResponse struct {
 	StatusCode int
 	Body       []byte
@@ -18,11 +23,13 @@ type PluginResponse struct {
 	Usage      UsageData
 }
 
+// ToolCall represents a tool invocation parsed from an LLM response.
 type ToolCall struct {
 	Name  string
 	Input map[string]any
 }
 
+// UsageData holds token usage counts parsed from an LLM response.
 type UsageData struct {
 	InputTokens         int
 	OutputTokens        int
@@ -30,12 +37,16 @@ type UsageData struct {
 	CacheCreationTokens int
 }
 
+// Proxy is an HTTP client wrapper that forwards requests to a configured upstream LLM provider.
+// It handles both synchronous and streaming request/response flows.
 type Proxy struct {
 	name     string
 	upstream string
 	client   *http.Client
 }
 
+// New creates a new Proxy targeting the given upstream URL. It validates the URL
+// and sets a default 120-second timeout on the underlying HTTP client.
 func New(name, upstreamURL string) (*Proxy, error) {
 	if _, err := url.Parse(upstreamURL); err != nil {
 		return nil, fmt.Errorf("invalid upstream URL: %w", err)
@@ -47,6 +58,8 @@ func New(name, upstreamURL string) (*Proxy, error) {
 	}, nil
 }
 
+// HandleRequest sends a synchronous request to the upstream provider and returns
+// the full response body, status code, headers, and measured round-trip duration.
 func (p *Proxy) HandleRequest(body []byte, headers map[string]string) (*PluginResponse, error) {
 	start := time.Now()
 
@@ -84,6 +97,8 @@ func (p *Proxy) HandleRequest(body []byte, headers map[string]string) (*PluginRe
 	return pr, nil
 }
 
+// ExtractUsage parses an upstream JSON response body to extract token usage counts,
+// tool calls, and the stop reason. Returns zero values if parsing fails.
 func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -126,6 +141,8 @@ func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 	return usage, toolCalls, stopReason
 }
 
+// Forward is a generic passthrough handler that proxies any HTTP request to the
+// upstream provider while preserving the original method, path, headers, and body.
 func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 	target := p.upstream + r.URL.Path
 	if r.URL.RawQuery != "" {
@@ -161,12 +178,15 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) (*UsageData, []ToolCall, string, int64, error) {
+// HandleRequestStream sends a streaming (SSE) request to the upstream provider,
+// relays Server-Sent Events directly to the caller, and collects aggregated usage
+// data, tool calls, stop reason, and response body from the event stream.
+func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) ([]byte, *UsageData, []ToolCall, string, int64, error) {
 	start := time.Now()
 
 	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, "", 0, err
+		return nil, nil, nil, "", 0, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -180,7 +200,7 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, nil, "", 0, err
+		return nil, nil, nil, "", 0, err
 	}
 	defer resp.Body.Close()
 
@@ -192,15 +212,15 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 	if resp.StatusCode != http.StatusOK {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, nil, "", 0, fmt.Errorf("read error body: %w", err)
+			return nil, nil, nil, "", 0, fmt.Errorf("read error body: %w", err)
 		}
 		w.Write(body)
-		return nil, nil, "", time.Since(start).Milliseconds(), nil
+		return body, nil, nil, "", time.Since(start).Milliseconds(), nil
 	}
 
-	usage, tools, stopReason, duration, err := streamAndCollect(resp, w)
+	respBody, usage, tools, stopReason, duration, err := streamAndCollect(resp, w)
 	if err != nil {
-		return nil, nil, "", duration, err
+		return nil, nil, nil, "", duration, err
 	}
-	return &usage, tools, stopReason, duration, nil
+	return respBody, &usage, tools, stopReason, duration, nil
 }

@@ -49,7 +49,13 @@ func TestProxy_StreamingResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"main.go\"}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello there\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"main.go\"}}}\n\n")
 		flusher.Flush()
 		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n\n")
 		flusher.Flush()
@@ -64,11 +70,14 @@ func TestProxy_StreamingResponse(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	usage, tools, stopReason, _, err := target.HandleRequestStream(
+	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
 	)
+	if string(respBody) != "Hello there" {
+		t.Fatalf("expected response body 'Hello there', got '%s'", string(respBody))
+	}
 	if err != nil {
 		t.Fatalf("HandleRequestStream failed: %v", err)
 	}

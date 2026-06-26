@@ -1,3 +1,6 @@
+// Package main is the entry point for the LLM Interceptor binary.
+// It initializes configuration, storage, state store, plugins, and the HTTP
+// server, then listens for incoming LLM proxy requests and API calls.
 package main
 
 import (
@@ -15,16 +18,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/chingjustwe/llm-interceptor/internal/api"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/plugins"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
-	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
+	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/types"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 //go:embed ui/dist/index.html
@@ -163,11 +166,12 @@ func main() {
 		}
 
 		if isStream {
-			usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w)
+			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w)
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return
 			}
+			respCtx.Body = respBody
 			if usage != nil {
 				respCtx.Usage = plugin.Usage(*usage)
 			}
@@ -208,7 +212,7 @@ func main() {
 			log.Printf("plugin response error: %v", err)
 		}
 
-		// Save request to storage (async, best-effort)
+		// Save request to storage and notify SSE clients (async, best-effort)
 		go func() {
 			storedReq := &types.StoredRequest{
 				ID:        reqCtx.ID,
@@ -231,6 +235,8 @@ func main() {
 			if err := store.SaveRequest(context.Background(), storedReq); err != nil {
 				log.Printf("failed to save request: %v", err)
 			}
+			// Publish request data to SSE clients
+			broker.Publish(storedReq)
 		}()
 	})
 
