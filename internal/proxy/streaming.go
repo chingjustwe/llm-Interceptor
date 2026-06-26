@@ -42,6 +42,7 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 	// Track the content block index of a blocked tool_use we're currently
 	// suppressing (-1 = none).
 	blockedIdx := -1
+	anyBlocked := false
 
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	for scanner.Scan() {
@@ -82,6 +83,7 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 					if idx, ok := raw["index"].(float64); ok {
 						blockedIdx = int(idx)
 					}
+					anyBlocked = true
 					continue
 				}
 			}
@@ -105,12 +107,12 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 		case "content_block_stop":
 			if blockedIdx >= 0 {
 				if idx, ok := raw["index"].(float64); ok && int(idx) == blockedIdx {
-					// The blocked tool_use stream just ended. Replace with
-					// a text block explaining the policy.
-					writeSSE(w, flusher, fmt.Sprintf(`event: content_block_start`))
-					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":"Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."}}`, blockedIdx))
-					writeSSE(w, flusher, fmt.Sprintf(`event: content_block_stop`))
-					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
+				// The blocked tool_use stream just ended. Replace with
+				// a text block explaining the policy.
+				blockedMsg := "Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."
+				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":%q}}`, blockedIdx, blockedMsg))
+				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
+				respBody.WriteString(blockedMsg)
 					blockedIdx = -1
 					continue
 				}
@@ -118,7 +120,7 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 			writeSSE(w, flusher, line)
 
 		case "message_delta":
-			if blockedIdx >= 0 {
+			if anyBlocked {
 				// We blocked a tool_use, but the stop_reason from upstream
 				// is still "tool_use". Override it to "end_turn". We replace
 				// the delta's stop_reason in the forwarded event.
