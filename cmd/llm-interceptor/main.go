@@ -86,6 +86,7 @@ func main() {
 			Endpoint:     cfg.Plugins.OTelExporter.Endpoint,
 			Headers:      cfg.Plugins.OTelExporter.Headers,
 			MetricPrefix: cfg.MetricPrefix,
+			MaxAttrLen:   cfg.Plugins.OTelExporter.MaxAttrLen,
 		})
 		if err != nil {
 			log.Fatalf("failed to init otel exporter: %v", err)

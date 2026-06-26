@@ -41,12 +41,14 @@ type OTelExporter struct {
 }
 
 // OTelExporterConfig configures the OTLP exporter endpoint, headers, metric
-// prefix, and service name for OpenTelemetry traces and metrics.
+// prefix, service name, and span attribute length limit for OpenTelemetry
+// traces and metrics.
 type OTelExporterConfig struct {
 	Endpoint     string
 	Headers      map[string]string
 	MetricPrefix string
 	ServiceName  string
+	MaxAttrLen   int
 }
 
 // NewOTelExporter creates an OTelExporter, initializing the OTLP trace and
@@ -60,6 +62,10 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 	service := cfg.ServiceName
 	if service == "" {
 		service = "llm-interceptor"
+	}
+	attrLimit := cfg.MaxAttrLen
+	if attrLimit <= 0 {
+		attrLimit = 65535
 	}
 
 	res := resource.NewWithAttributes(
@@ -81,7 +87,7 @@ func NewOTelExporter(ctx context.Context, cfg OTelExporterConfig) (*OTelExporter
 	}
 
 	spanLimits := sdktrace.NewSpanLimits()
-	spanLimits.AttributeValueLengthLimit = 65535
+	spanLimits.AttributeValueLengthLimit = attrLimit
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),

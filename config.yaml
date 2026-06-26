@@ -1,6 +1,6 @@
 listen: "127.0.0.1:8081"
 upstream: "https://api.deepseek.com/anthropic"
-metric_prefix: "llm_proxy."
+metric_prefix: "llm_interceptor."
 
 log:
   request_body: false
@@ -16,6 +16,7 @@ state_store:
 
 plugins:
   otel-exporter:
-    enabled: false
+    enabled: true
     endpoint: "localhost:4318"
     headers: {}
+    max_attr_len: 65535

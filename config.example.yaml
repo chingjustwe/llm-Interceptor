@@ -19,3 +19,4 @@ plugins:
     enabled: false
     endpoint: "localhost:4318"
     headers: {}
+    max_attr_len: 65535

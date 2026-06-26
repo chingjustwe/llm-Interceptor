@@ -1,3 +1,5 @@
+// Package config handles loading, validating, and providing default values for
+// the LLM Interceptor YAML configuration file.
 package config
 
 import (
@@ -8,6 +10,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config is the top-level configuration structure for the LLM Interceptor.
+// It specifies the listen address, upstream provider, storage, state store,
+// and plugin settings.
 type Config struct {
 	Listen       string           `yaml:"listen"`
 	Upstream     string           `yaml:"upstream"`
@@ -18,47 +23,62 @@ type Config struct {
 	Plugins      PluginConfig     `yaml:"plugins"`
 }
 
+// PluginConfig holds configuration for all built-in plugins.
 type PluginConfig struct {
 	OTelExporter OTelExporterConfig `yaml:"otel-exporter"`
 }
 
+// OTelExporterConfig configures the OpenTelemetry OTLP exporter plugin.
 type OTelExporterConfig struct {
-	Enabled  bool              `yaml:"enabled"`
-	Endpoint string            `yaml:"endpoint"`
-	Headers  map[string]string `yaml:"headers,omitempty"`
+	Enabled    bool              `yaml:"enabled"`
+	Endpoint   string            `yaml:"endpoint"`
+	Headers    map[string]string `yaml:"headers,omitempty"`
+	MaxAttrLen int               `yaml:"max_attr_len,omitempty"`
 }
 
+// LogConfig controls whether request and response bodies are logged.
 type LogConfig struct {
 	RequestBody  bool `yaml:"request_body"`
 	ResponseBody bool `yaml:"response_body"`
 }
 
+// StorageConfig selects the storage backend (sqlite or postgres) and
+// provides backend-specific connection parameters.
 type StorageConfig struct {
 	Type     string          `yaml:"type"`
 	SQLite   *SQLiteConfig   `yaml:"sqlite,omitempty"`
 	Postgres *PostgresConfig `yaml:"postgres,omitempty"`
 }
 
+// SQLiteConfig specifies the filesystem path for the SQLite database file.
 type SQLiteConfig struct {
 	Path string `yaml:"path"`
 }
 
+// PostgresConfig specifies the PostgreSQL connection string.
 type PostgresConfig struct {
 	ConnectionString string `yaml:"connection_string"`
 }
 
+// StateStoreConfig selects the state store backend (memory or redis) and
+// provides backend-specific connection parameters.
 type StateStoreConfig struct {
-	Type   string         `yaml:"type"`
-	Memory *MemoryConfig  `yaml:"memory,omitempty"`
-	Redis  *RedisConfig   `yaml:"redis,omitempty"`
+	Type   string        `yaml:"type"`
+	Memory *MemoryConfig `yaml:"memory,omitempty"`
+	Redis  *RedisConfig  `yaml:"redis,omitempty"`
 }
 
+// MemoryConfig is a placeholder for in-memory state store configuration.
 type MemoryConfig struct{}
 
+// RedisConfig specifies the Redis server URL for the state store.
 type RedisConfig struct {
 	URL string `yaml:"url"`
 }
 
+// Default returns a configuration with sensible defaults: listen on 127.0.0.1:8080,
+// proxy to Anthropic, SQLite storage at ~/.llm-interceptor/data.db, and in-memory
+// state store.
 func Default() *Config {
 	return &Config{
 		Listen:       "127.0.0.1:8080",
@@ -75,6 +95,9 @@ func Default() *Config {
 	}
 }
 
+// Load reads a YAML config file from the given path, merges it with defaults,
+// and validates the result. Returns an error if the file cannot be read or
+// validation fails.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -90,6 +113,8 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// Validate checks required configuration fields. It sets a default metric prefix
+// if omitted, and returns an error if listen address or upstream URL is empty.
 func (c *Config) Validate() error {
 	if c.Listen == "" {
 		return fmt.Errorf("config: listen address is required")
@@ -103,6 +128,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// expandHome replaces a leading "~/" prefix with the user's home directory path.
+// Returns the original path if home directory lookup fails.
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
@@ -114,6 +141,8 @@ func expandHome(path string) string {
 	return path
 }
 
+// StoragePath returns the expanded filesystem path for the SQLite database.
+// Returns empty string if SQLite is not configured.
 func (c *Config) StoragePath() string {
 	if c.Storage.SQLite == nil {
 		return ""
