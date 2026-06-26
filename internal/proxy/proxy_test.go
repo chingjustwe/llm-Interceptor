@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -81,5 +83,70 @@ func TestProxy_StreamingResponse(t *testing.T) {
 	}
 	if len(tools) != 1 || tools[0].Name != "Read" {
 		t.Fatalf("expected 1 tool_use (Read), got %v", tools)
+	}
+}
+
+func TestProxy_Forward_AnyPath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"method": r.Method,
+			"path":   r.URL.Path,
+		})
+	}))
+	defer upstream.Close()
+
+	target, err := New("test-catchall", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/v1/other-endpoint?q=test", nil)
+	req.Header.Set("x-custom", "value")
+	rec := httptest.NewRecorder()
+	target.Forward(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if body["method"] != "GET" {
+		t.Fatalf("expected method GET, got %s", body["method"])
+	}
+	if body["path"] != "/v1/other-endpoint" {
+		t.Fatalf("expected path /v1/other-endpoint, got %s", body["path"])
+	}
+}
+
+func TestProxy_Forward_PreservesBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"echo": string(body)})
+	}))
+	defer upstream.Close()
+
+	target, err := New("test-body", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/complete", io.NopCloser(bytes.NewReader([]byte(`{"hello":"world"}`))))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	target.Forward(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if body["echo"] != `{"hello":"world"}` {
+		t.Fatalf("expected body to be echoed, got %s", body["echo"])
 	}
 }

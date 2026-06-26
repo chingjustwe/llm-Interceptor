@@ -175,6 +175,12 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Catch-all: forward all other requests transparently
+	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("forwarding %s %s", r.Method, r.URL.Path)
+		target.Forward(w, r)
+	})
+
 	server := &http.Server{
 		Addr:    cfg.Listen,
 		Handler: r,

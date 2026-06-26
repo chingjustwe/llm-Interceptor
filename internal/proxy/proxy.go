@@ -126,6 +126,41 @@ func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 	return usage, toolCalls, stopReason
 }
 
+func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
+	target := p.upstream + r.URL.Path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+		r.Body.Close()
+	}
+
+	req, err := http.NewRequest(r.Method, target, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	for k, v := range r.Header {
+		req.Header[k] = v
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) (*UsageData, []ToolCall, string, int64, error) {
 	start := time.Now()
 
