@@ -62,6 +62,16 @@ func main() {
 		}
 		store = s
 		defer store.Close()
+	case "postgres":
+		if cfg.Storage.Postgres == nil {
+			log.Fatalf("postgres storage requires a 'postgres' config block")
+		}
+		s, err := storage.NewPostgres(cfg.Storage.Postgres.ConnectionString)
+		if err != nil {
+			log.Fatalf("failed to init postgres storage: %v", err)
+		}
+		store = s
+		defer store.Close()
 	default:
 		log.Fatalf("unknown storage type: %s", cfg.Storage.Type)
 	}
