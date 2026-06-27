@@ -146,12 +146,23 @@ func (t *ToolPolicyPlugin) OnResponse(ctx *plugin.ResponseContext) error {
 // IsBlocked returns true if the given tool name (case-insensitive) is blocked
 // by policy. Used by the proxy to intercept tool_use content blocks in SSE
 // streams and non-streaming responses.
+//
+// The resolution order is: allowlist overrides blocklist. A tool is allowed if:
+//   - it appears in AllowedTools (regardless of BlockedTools), or
+//   - no BlockedTools are configured (blocklist mode with non-blocked tools)
+//
+// A tool is blocked if:
+//   - it appears in BlockedTools and not in AllowedTools, or
+//   - AllowedTools are configured and the tool is not in that list (allowlist mode).
 func (t *ToolPolicyPlugin) IsBlocked(name string) bool {
 	lower := strings.ToLower(name)
+	if t.allowedTools[lower] {
+		return false
+	}
 	if t.blockedTools[lower] {
 		return true
 	}
-	if t.mode == "allowlist" && !t.allowedTools[lower] {
+	if t.mode == "allowlist" {
 		return true
 	}
 	return false

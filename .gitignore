@@ -33,5 +33,9 @@ node_modules/
 ui/dist/
 ui/src/*.js
 
+
+# Docs - superpowers
+docs/superpowers/
+
 # Test artifacts
 test-results/

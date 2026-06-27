@@ -1,3 +1,6 @@
+// Package storage defines the storage abstraction for persisting LLM request
+// and response data. Implementations include SQLite (embedded, dev-friendly)
+// and PostgreSQL (production).
 package storage
 
 import (
@@ -5,14 +8,19 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
 	"github.com/chingjustwe/llm-interceptor/internal/types"
+	_ "modernc.org/sqlite"
 )
 
+// SQLiteBackend implements the Backend interface using an embedded SQLite
+// database. It is the default storage engine for development and single-node
+// deployments.
 type SQLiteBackend struct {
 	db *sql.DB
 }
 
+// NewSQLite opens (or creates) a SQLite database at the given path and
+// initializes the requests table and indexes if they do not exist.
 func NewSQLite(path string) (*SQLiteBackend, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -45,6 +53,8 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 	return &SQLiteBackend{db: db}, nil
 }
 
+// SaveRequest inserts a new LLM request record into the database, including
+// metadata, token usage, and the original request/response bodies.
 func (s *SQLiteBackend) SaveRequest(ctx context.Context, req *types.StoredRequest) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO requests (id, session_id, model, method, path, request_body, response_body,
@@ -62,6 +72,8 @@ func (s *SQLiteBackend) SaveRequest(ctx context.Context, req *types.StoredReques
 	return nil
 }
 
+// GetSessionRequests retrieves all requests belonging to a specific session,
+// ordered by creation time descending, with pagination via limit and offset.
 func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string, limit, offset int) ([]types.StoredRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, model, method, path, request_body, response_body,
@@ -92,6 +104,9 @@ func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string
 	return results, nil
 }
 
+// QueryRequests retrieves requests matching the given filter criteria (session,
+// model, time range) with optional pagination. Results are ordered by creation
+// time descending.
 func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestFilter) ([]types.StoredRequest, error) {
 	query := `SELECT id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -154,6 +169,7 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 	return results, nil
 }
 
+// Close shuts down the database connection.
 func (s *SQLiteBackend) Close() error {
 	return s.db.Close()
 }

@@ -75,6 +75,7 @@ func TestProxy_StreamingResponse(t *testing.T) {
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		nil,
 	)
 	if string(respBody) != "Hello there" {
 		t.Fatalf("expected response body 'Hello there', got '%s'", string(respBody))
@@ -128,6 +129,7 @@ func TestStreamAndCollect_Passthrough(t *testing.T) {
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("HandleRequestStream failed: %v", err)
@@ -247,4 +249,104 @@ func TestProxy_Forward_PreservesBody(t *testing.T) {
 	if body["echo"] != `{"hello":"world"}` {
 		t.Fatalf("expected body to be echoed, got %s", body["echo"])
 	}
+}
+
+func TestHandleRequestStream_ToolBlockedFollowUp(t *testing.T) {
+	var requestCount int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		if requestCount == 1 {
+			// First request: return SSE with a blocked tool (Bash).
+			fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+			flusher.Flush()
+			fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I'll use Bash to list files\"}}\n\n")
+			flusher.Flush()
+			fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+			flusher.Flush()
+			fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_bash_001\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}}\n\n")
+			flusher.Flush()
+			fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n")
+			flusher.Flush()
+			fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			flusher.Flush()
+			return
+		}
+
+		// Second request (follow-up): verify tool_result is present, then
+		// return an LLM-adaptive text-only response.
+		// The proxy's buildFollowUpRequest appends an assistant message
+		// and a user message with tool_result. Verify the structure.
+		if !strings.Contains(string(body), "tool_result") {
+			t.Error("follow-up request should contain tool_result blocks")
+		}
+		if !strings.Contains(string(body), "blocked by interceptor") {
+			t.Error("follow-up request should contain blocked message in tool_result")
+		}
+
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I cannot use Bash as it is blocked. Let me use Read instead.\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_read_001\",\"name\":\"Read\",\"input\":{\"path\":\"main.go\"}}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":15,\"output_tokens\":8}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	target, err := New("test-blocked-followup", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	isToolBlocked := func(name string) bool {
+		return name == "Bash"
+	}
+
+	rec := httptest.NewRecorder()
+	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"list files with Bash"}],"stream":true}`),
+		map[string]string{"x-api-key": "test-key"},
+		rec,
+		isToolBlocked,
+	)
+	if err != nil {
+		t.Fatalf("HandleRequestStream failed: %v", err)
+	}
+	// The client should receive the adaptive response (second LLM call),
+	// not the original response with the blocked tool.
+	expectedText := "I cannot use Bash as it is blocked. Let me use Read instead."
+	if string(respBody) != expectedText {
+		t.Fatalf("expected adaptive response %q, got %q", expectedText, string(respBody))
+	}
+	if stopReason != "tool_use" {
+		t.Fatalf("expected stop_reason tool_use, got %s", stopReason)
+	}
+	if len(tools) != 1 || tools[0].Name != "Read" {
+		t.Fatalf("expected 1 tool_use (Read), got %v", tools)
+	}
+	if usage == nil {
+		t.Fatal("expected non-nil usage")
+	}
+	if usage.InputTokens != 15 || usage.OutputTokens != 8 {
+		t.Fatalf("expected usage 15/8, got %d/%d", usage.InputTokens, usage.OutputTokens)
+	}
+	// The client should NOT receive the original blocked tool (Bash tool_use)
+	// in the SSE output. The adaptive response mentions "Bash" in text but
+	// should not have a Bash tool_use content block.
+	if strings.Contains(rec.Body.String(), `"name":"Bash"`) {
+		t.Error("SSE output should not contain a Bash tool_use content block")
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests (original + follow-up), got %d", requestCount)
+	}
+	assertSSEValid(t, rec.Body.String())
 }

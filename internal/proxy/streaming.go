@@ -18,49 +18,26 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, line string) {
 	flusher.Flush()
 }
 
-// streamAndCollect reads Server-Sent Events from the upstream response, relays each
-// event line to the caller via the ResponseWriter, and aggregates usage data, tool
-// calls, stop reason, and response body from the event stream for post-processing
-// by plugins.
-func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter) ([]byte, UsageData, []ToolCall, string, int64, error) {
+// collectSSE reads Server-Sent Events from the upstream response and buffers them
+// entirely without forwarding to any client. It returns the raw SSE text (for later
+// forwarding if no blocking is needed), the parsed content blocks (for constructing
+// follow-up requests), and aggregated metadata (usage, tool calls, stop reason,
+// response body text).
+func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []ContentBlock, respBody []byte, usage UsageData, tools []ToolCall, stopReason string, durationMs int64, err error) {
 	start := time.Now()
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return nil, UsageData{}, nil, "", 0, fmt.Errorf("response writer does not support flushing")
-	}
 
+	var buf strings.Builder
 	var finalUsage UsageData
-	var finalToolCalls []ToolCall
-	var stopReason string
-	var respBody strings.Builder
+	var finalTools []ToolCall
+	var finalStopReason string
+	var respText strings.Builder
+	var finalBlocks []ContentBlock
 
-	// pendingEvent buffers an "event: xxx" line until its paired "data: "
-	// line is processed. This ensures we never emit an event: line without
-	// its corresponding data: line, which would confuse SSE clients.
-	pendingEvent := ""
+	var pendingEvent string
 
-	// writePendingAndData writes any buffered event line followed by the
-	// given data line, then clears the buffer.
-	writePendingAndData := func(dataLine string) {
-		if pendingEvent != "" {
-			writeSSE(w, flusher, pendingEvent)
-			pendingEvent = ""
-		}
-		line := dataLine
-		if !strings.HasPrefix(line, "data: ") {
-			line = "data: " + line
-		}
-		writeSSE(w, flusher, line)
-	}
-
-	// flushPending writes any pending event line as an orphan (no paired
-	// data). This should only happen for non-data lines like blank
-	// separators between events.
-	flushPending := func() {
-		if pendingEvent != "" {
-			writeSSE(w, flusher, pendingEvent)
-			pendingEvent = ""
-		}
+	writeLine := func(line string) {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
 	}
 
 	scanner := bufio.NewScanner(upstreamResp.Body)
@@ -68,21 +45,30 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter) ([]byt
 		line := scanner.Text()
 
 		if strings.HasPrefix(line, "event: ") {
-			flushPending()
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+			}
 			pendingEvent = line
 			continue
 		}
 
 		if !strings.HasPrefix(line, "data: ") {
-			flushPending()
-			writeSSE(w, flusher, line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 			continue
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(data), &raw); err != nil {
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 			continue
 		}
 		evtType, _ := raw["type"].(string)
@@ -90,39 +76,58 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter) ([]byt
 		switch evtType {
 		case "content_block_start":
 			block, ok := raw["content_block"].(map[string]any)
-			if !ok {
-				writePendingAndData(line)
-				continue
-			}
-			if block["type"] == "tool_use" {
-				var tc ToolCall
-				if name, ok := block["name"].(string); ok {
-					tc.Name = name
+			if ok {
+				var cb ContentBlock
+				if t, _ := block["type"].(string); t == "tool_use" {
+					cb.Type = "tool_use"
+					cb.ToolUseID, _ = block["id"].(string)
+					cb.Name, _ = block["name"].(string)
+					cb.Input, _ = block["input"].(map[string]any)
+					var tc ToolCall
+					tc.ID = cb.ToolUseID
+					tc.Name = cb.Name
+					tc.Input = cb.Input
+					finalTools = append(finalTools, tc)
+				} else {
+					cb.Type = "text"
 				}
-				if input, ok := block["input"].(map[string]any); ok {
-					tc.Input = input
-				}
-				finalToolCalls = append(finalToolCalls, tc)
+				finalBlocks = append(finalBlocks, cb)
 			}
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 
 		case "content_block_delta":
 			if delta, ok := raw["delta"].(map[string]any); ok {
 				if delta["type"] == "text_delta" {
 					if text, ok := delta["text"].(string); ok {
-						respBody.WriteString(text)
+						respText.WriteString(text)
+						// Accumulate text into the last text content block.
+						if len(finalBlocks) > 0 && finalBlocks[len(finalBlocks)-1].Type == "text" {
+							finalBlocks[len(finalBlocks)-1].Text += text
+						}
 					}
 				}
 			}
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 
 		case "content_block_stop":
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 
 		case "message_delta":
 			if delta, ok := raw["delta"].(map[string]any); ok {
 				if sr, ok := delta["stop_reason"].(string); ok {
-					stopReason = sr
+					finalStopReason = sr
 				}
 			}
 			if u, ok := raw["usage"].(map[string]any); ok {
@@ -139,12 +144,24 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter) ([]byt
 					finalUsage.CacheCreationTokens = int(v)
 				}
 			}
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
+
 		default:
-			writePendingAndData(line)
+			if pendingEvent != "" {
+				writeLine(pendingEvent)
+				pendingEvent = ""
+			}
+			writeLine(line)
 		}
 	}
-	flushPending()
-	duration := time.Since(start).Milliseconds()
-	return []byte(respBody.String()), finalUsage, finalToolCalls, stopReason, duration, scanner.Err()
+	if pendingEvent != "" {
+		writeLine(pendingEvent)
+	}
+
+	durationMs = time.Since(start).Milliseconds()
+	return buf.String(), finalBlocks, []byte(respText.String()), finalUsage, finalTools, finalStopReason, durationMs, scanner.Err()
 }

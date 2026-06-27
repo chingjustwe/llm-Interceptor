@@ -39,6 +39,7 @@ type Usage struct {
 
 // ToolCall represents a tool invocation parsed from an LLM response.
 type ToolCall struct {
+	ID    string
 	Name  string
 	Input map[string]any
 }

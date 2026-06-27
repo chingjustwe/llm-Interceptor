@@ -125,11 +125,13 @@ func main() {
 			cfg.Plugins.RateLimit.TokensPerMinute,
 		))
 	}
+	var toolPolicy *plugins.ToolPolicyPlugin
 	if len(cfg.Plugins.ToolPolicy.BlockedTools) > 0 || len(cfg.Plugins.ToolPolicy.AllowedTools) > 0 {
-		pluginList = append(pluginList, plugins.NewToolPolicyPlugin(
+		toolPolicy = plugins.NewToolPolicyPlugin(
 			cfg.Plugins.ToolPolicy.BlockedTools,
 			cfg.Plugins.ToolPolicy.AllowedTools,
-		))
+		)
+		pluginList = append(pluginList, toolPolicy)
 	}
 	disp := plugin.NewDispatcher(pluginList)
 
@@ -208,7 +210,11 @@ func main() {
 		body = reqCtx.Body
 
 		if isStream {
-			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w)
+			var isToolBlocked func(name string) bool
+			if toolPolicy != nil {
+				isToolBlocked = toolPolicy.IsBlocked
+			}
+			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return

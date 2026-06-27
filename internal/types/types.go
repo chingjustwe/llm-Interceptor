@@ -1,5 +1,9 @@
+// Package types defines shared data structures used across the LLM Interceptor
+// codebase, including request/response models, token usage, and storage types.
 package types
 
+// TokenUsage tracks token consumption for an LLM request, including cache
+// metrics separately from regular input/output tokens.
 type TokenUsage struct {
 	InputTokens         int `json:"input_tokens" yaml:"input_tokens"`
 	OutputTokens        int `json:"output_tokens" yaml:"output_tokens"`
@@ -7,20 +11,26 @@ type TokenUsage struct {
 	CacheCreationTokens int `json:"cache_creation_tokens" yaml:"cache_creation_tokens"`
 }
 
+// ToolCall represents a tool invocation parsed from an LLM response content block.
 type ToolCall struct {
+	ID    string         `json:"id"`
 	Name  string         `json:"name"`
 	Input map[string]any `json:"input"`
 }
 
+// RequestBody represents the JSON structure of an incoming LLM request body.
+// It is used to extract common fields such as model, streaming mode, and tools.
 type RequestBody struct {
-	Model     string   `json:"model"`
-	Messages  []any    `json:"messages"`
-	System    *string  `json:"system,omitempty"`
-	Tools     []any    `json:"tools,omitempty"`
-	MaxTokens *int     `json:"max_tokens,omitempty"`
-	Stream    bool     `json:"stream,omitempty"`
+	Model     string  `json:"model"`
+	Messages  []any   `json:"messages"`
+	System    *string `json:"system,omitempty"`
+	Tools     []any   `json:"tools,omitempty"`
+	MaxTokens *int    `json:"max_tokens,omitempty"`
+	Stream    bool    `json:"stream,omitempty"`
 }
 
+// StoredRequest is the database model for a persisted LLM request. It contains
+// the full request/response bodies, metadata, and parsed token usage data.
 type StoredRequest struct {
 	ID         string     `json:"id"`
 	SessionID  string     `json:"session_id"`
@@ -35,6 +45,9 @@ type StoredRequest struct {
 	CreatedAt  int64      `json:"created_at"`
 }
 
+// RequestFilter defines the available filter parameters for querying stored
+// requests. Nil fields are omitted from the query, providing flexible filtering
+// by session, model, time range, and pagination.
 type RequestFilter struct {
 	SessionID *string
 	Model     *string
