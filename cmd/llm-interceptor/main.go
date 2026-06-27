@@ -156,25 +156,34 @@ func main() {
 	if cfg.Plugins.CostTracker.Enabled {
 		ct := plugins.NewCostTracker(st)
 
-		// Fetch online pricing (merges into defaults).
 		pricingURL := cfg.Plugins.CostTracker.PricingURL
 		if pricingURL == "" {
 			pricingURL = "https://models.dev/api.json"
 		}
-		if onlinePrices, err := plugins.FetchOnlinePricing(pricingURL); err != nil {
-			log.Printf("cost: online pricing unavailable (%v), using static defaults", err)
-		} else {
-			ct.MergePrices(onlinePrices)
-		}
 
-		// Config-level Prices override everything (highest priority).
+		// Config-level overrides must be stored before the first fetch so
+		// the refresh goroutine can re-apply them on each cycle.
 		if len(cfg.Plugins.CostTracker.Prices) > 0 {
 			prices := make(map[string]plugins.PriceEntry, len(cfg.Plugins.CostTracker.Prices))
 			for model, p := range cfg.Plugins.CostTracker.Prices {
 				prices[model] = plugins.PriceEntry{InputPerM: p.InputPerM, OutputPerM: p.OutputPerM}
 			}
-			ct.MergePrices(prices)
+			ct.SetConfigPrices(prices)
 		}
+
+		// Initial fetch (best-effort, merges into static defaults).
+		if onlinePrices, err := plugins.FetchOnlinePricing(pricingURL); err != nil {
+			log.Printf("cost: initial pricing unavailable (%v), using static defaults", err)
+		} else {
+			ct.MergePrices(onlinePrices)
+		}
+		// Re-apply config overrides so they always win.
+		ct.MergePrices(ct.ConfigPrices())
+
+		// Periodic refresh every 10 minutes.
+		refreshCtx, cancelRefresh := context.WithCancel(context.Background())
+		ct.StartPricingRefresh(refreshCtx, pricingURL, 10*time.Minute)
+		defer cancelRefresh()
 
 		pluginList = append(pluginList, ct)
 	}

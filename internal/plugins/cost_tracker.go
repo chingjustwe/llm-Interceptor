@@ -42,11 +42,15 @@ type CostTracker struct {
 	mu             sync.RWMutex
 	sessions       map[string]float64
 	prices         map[string]PriceEntry
-	defaultPerM    float64 // fallback $/1M tokens for unknown models (input + output combined)
+	defaultPerM    float64          // fallback $/1M tokens for unknown models (input + output combined)
+	configPrices   map[string]PriceEntry // preserved for re-apply on periodic refresh
+	pricingURL     string
+	pricingRefresh time.Duration
+	stopRefresh    chan struct{}
 }
 
 // NewCostTracker creates a CostTracker with the given state backend (may be
-// nil for in-memory-only tracking) and default pricing (Anthropic + DeepSeek).
+// nil for in-memory-only tracking) and default Anthropic pricing.
 // Unknown models fall back to defaultPerM ($/1M tokens, combined input+output).
 func NewCostTracker(st state.Backend) *CostTracker {
 	prices := make(map[string]PriceEntry, len(defaultPrices))
@@ -58,6 +62,60 @@ func NewCostTracker(st state.Backend) *CostTracker {
 		sessions:    make(map[string]float64),
 		prices:      prices,
 		defaultPerM: 2.0,
+	}
+}
+
+// SetConfigPrices stores config-level price overrides so they can be re-applied
+// after each periodic refresh of the online pricing source.
+func (c *CostTracker) SetConfigPrices(prices map[string]PriceEntry) {
+	c.configPrices = prices
+}
+
+// ConfigPrices returns the stored config-level price overrides.
+func (c *CostTracker) ConfigPrices() map[string]PriceEntry {
+	return c.configPrices
+}
+
+// StartPricingRefresh begins a background goroutine that fetches model pricing
+// from the given URL every interval. Config-level price overrides (set via
+// SetConfigPrices) are re-applied after each fetch.
+// Pass a cancellable context to stop the goroutine (or call StopPricingRefresh).
+func (c *CostTracker) StartPricingRefresh(ctx context.Context, url string, interval time.Duration) {
+	c.pricingURL = url
+	c.pricingRefresh = interval
+	c.stopRefresh = make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.stopRefresh:
+				return
+			case <-ticker.C:
+				prices, err := FetchOnlinePricing(url)
+				if err != nil {
+					log.Printf("cost: refresh failed (%v), keeping existing prices", err)
+					continue
+				}
+				c.MergePrices(prices)
+				// Re-apply config overrides so they survive the refresh.
+				if len(c.configPrices) > 0 {
+					c.MergePrices(c.configPrices)
+				}
+				log.Printf("cost: refreshed %d model prices from %s", len(prices), url)
+			}
+		}
+	}()
+}
+
+// StopPricingRefresh signals the background refresh goroutine to exit.
+func (c *CostTracker) StopPricingRefresh() {
+	if c.stopRefresh != nil {
+		close(c.stopRefresh)
 	}
 }
 
