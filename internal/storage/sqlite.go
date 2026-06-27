@@ -46,6 +46,16 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 		);
 		CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(session_id);
 		CREATE INDEX IF NOT EXISTS idx_requests_created ON requests(created_at);
+
+		CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			key_hash TEXT NOT NULL,
+			key_prefix TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
@@ -167,6 +177,74 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 		return nil, err
 	}
 	return results, nil
+}
+
+// SaveAPIKey inserts or updates a managed API key record. The key hash is
+// stored using bcrypt, and the prefix allows fast lookup during validation.
+func (s *SQLiteBackend) SaveAPIKey(ctx context.Context, key *APIKey) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (id, key_hash, key_prefix, name, enabled, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled`,
+		key.ID, key.KeyHash, key.KeyPrefix, key.Name, key.Enabled, key.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save api key: %w", err)
+	}
+	return nil
+}
+
+// GetAPIKeyByPrefix retrieves a single API key by its short prefix. Returns
+// nil without error if no matching key exists, allowing the caller to
+// distinguish "not found" from database errors.
+func (s *SQLiteBackend) GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, key_hash, key_prefix, name, enabled, created_at
+		 FROM api_keys WHERE key_prefix = ?`, prefix,
+	)
+	var k APIKey
+	err := row.Scan(&k.ID, &k.KeyHash, &k.KeyPrefix, &k.Name, &k.Enabled, &k.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get api key by prefix: %w", err)
+	}
+	return &k, nil
+}
+
+// ListAPIKeys returns all stored API keys ordered by creation time descending.
+func (s *SQLiteBackend) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, key_hash, key_prefix, name, enabled, created_at
+		 FROM api_keys ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.KeyHash, &k.KeyPrefix, &k.Name, &k.Enabled, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+	return keys, nil
+}
+
+// DisableAPIKey marks an API key as disabled so it can no longer be used for
+// authentication. The key record is preserved for audit purposes.
+func (s *SQLiteBackend) DisableAPIKey(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE api_keys SET enabled = false WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("disable api key: %w", err)
+	}
+	return nil
 }
 
 // Close shuts down the database connection.

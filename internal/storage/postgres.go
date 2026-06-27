@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/chingjustwe/llm-interceptor/internal/types"
@@ -54,6 +55,16 @@ func NewPostgres(connString string) (*PostgresBackend, error) {
 		);
 		CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(session_id);
 		CREATE INDEX IF NOT EXISTS idx_requests_created ON requests(created_at);
+
+		CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			key_hash TEXT NOT NULL,
+			key_prefix TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
 	`); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("create table: %w", err)
@@ -186,6 +197,74 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 		return nil, fmt.Errorf("iterate query results: %w", err)
 	}
 	return results, nil
+}
+
+// SaveAPIKey inserts or updates a managed API key record. The key hash is
+// stored using bcrypt, and the prefix allows fast lookup during validation.
+func (p *PostgresBackend) SaveAPIKey(ctx context.Context, key *APIKey) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO api_keys (id, key_hash, key_prefix, name, enabled, created_at)
+		 VALUES ($1, $2, $3, $4, $5, TO_TIMESTAMP($6))
+		 ON CONFLICT(id) DO UPDATE SET enabled=EXCLUDED.enabled`,
+		key.ID, key.KeyHash, key.KeyPrefix, key.Name, key.Enabled, key.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save api key: %w", err)
+	}
+	return nil
+}
+
+// GetAPIKeyByPrefix retrieves a single API key by its short prefix. Returns
+// nil without error if no matching key exists, allowing the caller to
+// distinguish "not found" from database errors.
+func (p *PostgresBackend) GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error) {
+	row := p.pool.QueryRow(ctx,
+		`SELECT id, key_hash, key_prefix, name, enabled,
+		 EXTRACT(EPOCH FROM created_at)::bigint FROM api_keys WHERE key_prefix = $1`, prefix,
+	)
+	var k APIKey
+	err := row.Scan(&k.ID, &k.KeyHash, &k.KeyPrefix, &k.Name, &k.Enabled, &k.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get api key by prefix: %w", err)
+	}
+	return &k, nil
+}
+
+// ListAPIKeys returns all stored API keys ordered by creation time descending.
+func (p *PostgresBackend) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, key_hash, key_prefix, name, enabled,
+		 EXTRACT(EPOCH FROM created_at)::bigint FROM api_keys ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.KeyHash, &k.KeyPrefix, &k.Name, &k.Enabled, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+	return keys, nil
+}
+
+// DisableAPIKey marks an API key as disabled so it can no longer be used for
+// authentication. The key record is preserved for audit purposes.
+func (p *PostgresBackend) DisableAPIKey(ctx context.Context, id string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE api_keys SET enabled = false WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("disable api key: %w", err)
+	}
+	return nil
 }
 
 // Close shuts down the PostgreSQL connection pool.
