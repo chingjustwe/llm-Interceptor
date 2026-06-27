@@ -269,6 +269,9 @@ func main() {
 	// API routes
 	apiHandler := api.NewHandler(store, st)
 	apiHandler.CalculateCostFn = calculateCost
+	if rm != nil {
+		apiHandler.KeyManager = rm.keyManager
+	}
 	apiHandler.Register(r)
 
 	broker := api.NewSSEBroker()

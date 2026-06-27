@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/chingjustwe/llm-interceptor/internal/router"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/types"
@@ -20,10 +21,11 @@ import (
 type CostCalculator func(model string, inputTokens, outputTokens int) float64
 
 // Handler provides HTTP endpoints for the web UI to query stored requests,
-// sessions, and aggregate statistics.
+// sessions, and aggregate statistics, as well as manage API keys.
 type Handler struct {
 	store           storage.Backend
 	st              state.Backend
+	KeyManager      *router.KeyManager // nil when router mode is disabled
 	CalculateCostFn CostCalculator
 }
 
@@ -34,17 +36,25 @@ func NewHandler(store storage.Backend, st state.Backend) *Handler {
 
 // Register mounts all API routes on the given chi router:
 //
-//	GET /api/requests        — list requests with pagination
-//	GET /api/requests/{id}   — get a single request
-//	GET /api/sessions/{id}/requests — list requests for a session
-//	GET /api/sessions        — list all sessions
-//	GET /api/stats           — aggregate statistics
+//	GET  /api/requests            — list requests with pagination
+//	GET  /api/requests/{id}       — get a single request
+//	GET  /api/sessions/{id}/requests — list requests for a session
+//	GET  /api/sessions            — list all sessions
+//	GET  /api/stats               — aggregate statistics
+//	POST /api/keys                — generate a new API key
+//	GET  /api/keys                — list all API keys
+//	PATCH /api/keys/{id}/disable  — disable an API key
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/api/requests", h.listRequests)
 	r.Get("/api/requests/{id}", h.getRequest)
 	r.Get("/api/sessions/{id}/requests", h.getSessionRequests)
 	r.Get("/api/sessions", h.listSessions)
 	r.Get("/api/stats", h.costStats)
+
+	// API key management (requires router mode to be enabled).
+	r.Post("/api/keys", h.generateKey)
+	r.Get("/api/keys", h.listKeys)
+	r.Patch("/api/keys/{id}/disable", h.disableKey)
 }
 
 // listRequests returns a paginated list of all stored requests, ordered by
@@ -185,6 +195,89 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		"total_tokens":   totalTokens,
 		"per_model":      perModel,
 	})
+}
+
+// generateKey creates a new managed API key and returns the plaintext key
+// in the response. The plaintext is only available at generation time.
+// Request body: {"name": "my-key"}.
+func (h *Handler) generateKey(w http.ResponseWriter, r *http.Request) {
+	if h.KeyManager == nil {
+		http.Error(w, `{"error":"router mode not enabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		return
+	}
+	key, err := h.KeyManager.Generate(r.Context(), req.Name)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{
+		"key":        key,
+		"key_prefix": key[:12],
+		"name":       req.Name,
+	})
+}
+
+// listKeys returns all stored API keys with their prefix, name, and status.
+// The full key and hash are never exposed.
+func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
+	if h.KeyManager == nil {
+		http.Error(w, `{"error":"router mode not enabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	keys, err := h.store.ListAPIKeys(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	// Strip sensitive fields before sending to the client.
+	type safeKey struct {
+		ID        string `json:"id"`
+		KeyPrefix string `json:"key_prefix"`
+		Name      string `json:"name"`
+		Enabled   bool   `json:"enabled"`
+		CreatedAt int64  `json:"created_at"`
+	}
+	result := make([]safeKey, len(keys))
+	for i, k := range keys {
+		result[i] = safeKey{
+			ID:        k.ID,
+			KeyPrefix: k.KeyPrefix,
+			Name:      k.Name,
+			Enabled:   k.Enabled,
+			CreatedAt: k.CreatedAt,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// disableKey marks an API key as disabled so it can no longer authenticate
+// requests. The key record is preserved for audit purposes.
+func (h *Handler) disableKey(w http.ResponseWriter, r *http.Request) {
+	if h.KeyManager == nil {
+		http.Error(w, `{"error":"router mode not enabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, `{"error":"key id is required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.store.DisableAPIKey(r.Context(), id); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // microToDollar converts microdollars to dollars (μ$ ÷ 1,000,000).
