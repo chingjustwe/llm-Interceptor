@@ -52,7 +52,7 @@
 
 ```bash
 # Clone
-git clone https://github.com/chingjustwe/llm-Interceptor.git
+git clone https://github.com/chingjustwe/llm-interceptor.git
 cd llm-interceptor
 
 # Install frontend deps (first time only)

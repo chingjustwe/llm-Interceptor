@@ -12,7 +12,7 @@ protocol translation (Anthropic ↔ OpenAI), and a React SPA — in a single Go 
 - Go 1.26.3, Node v24.16.0
 - Key deps: `chi/v5`, `yaml.v3`, `modernc.org/sqlite`, `jackc/pgx/v5`,
   `redis/go-redis/v9`, `otel`, `golang.org/x/crypto`
-- Remote: `git@github.com:chingjustwe/llm-Interceptor.git`
+- Remote: `git@github.com:chingjustwe/llm-interceptor.git`
 
 ## Directory Layout
 ```
@@ -146,7 +146,7 @@ Plugin registration order in `main.go`:
 - Run `git push` after each commit.
 
 ## Common Gotchas
-- **Module path is all lowercase**: `github.com/chingjustwe/llm-interceptor` — import paths use lowercase `llm-interceptor`, NOT `llm-Interceptor`
+- **Module path is all lowercase**: `github.com/chingjustwe/llm-interceptor` — import paths use lowercase `llm-interceptor`
 - **Plugin types differ**: `proxy.UsageData`/`proxy.ToolCall` and `plugin.Usage`/`plugin.ToolCall` are separate types — explicit conversion needed in `main.go`
 - **Reverse OnResponse order**: CostTracker must be registered last (runs first in reverse) to write cost before Budget reads it in next request
 - **SQLite CGO-free**: import `modernc.org/sqlite`, NOT `mattn/go-sqlite3`
