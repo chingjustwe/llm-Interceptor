@@ -9,7 +9,4 @@ services:
       POSTGRES_PASSWORD: llmproxy
       POSTGRES_DB: llmproxy
     volumes:
-      - pgdata:/var/lib/postgresql/data
-
-volumes:
-  pgdata:
+      - /Users/nightfield/self/data/pg:/var/lib/postgresql/data

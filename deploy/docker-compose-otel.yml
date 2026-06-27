@@ -1,0 +1,32 @@
+# File: docker-compose.yml
+# Purpose: Single-container Grafana LGTM (Loki/Grafana/Tempo/Mimir) observability stack.
+#          Includes embedded OpenTelemetry Collector that receives OTLP data and routes
+#          to the built-in Prometheus, Tempo, and Loki backends. Grafana comes pre-configured
+#          with data sources and dashboards.
+
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.8.3
+    container_name: lgtm
+    ports:
+      # Grafana UI
+      - "3100:3000"
+      # Prometheus (Mimir) - metrics query
+      - "9090:9090"
+      # OpenTelemetry Collector - OTLP gRPC receiver
+      - "4317:4317"
+      # OpenTelemetry Collector - OTLP HTTP receiver
+      - "4318:4318"
+      # Loki - logs query
+      - "3101:3100"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - /Users/nightfield/self/data:/data
+    networks:
+      - observability-net
+
+networks:
+  observability-net:
+    driver: bridge

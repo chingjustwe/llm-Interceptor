@@ -4,3 +4,5 @@ services:
     container_name: llm-interceptor-redis
     ports:
       - "6379:6379"
+    volumes:
+      - /Users/nightfield/self/data/redis:/data
