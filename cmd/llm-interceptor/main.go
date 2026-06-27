@@ -24,6 +24,7 @@ import (
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/plugins"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
+	"github.com/chingjustwe/llm-interceptor/internal/router"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/types"
@@ -143,6 +144,43 @@ func main() {
 	default:
 		log.Fatalf("unknown state store type: %s", cfg.StateStore.Type)
 	}
+
+	// routerMode bundles all router-mode state. It is nil when router mode is
+	// disabled, and the handler falls through to the default passthrough proxy.
+	type routerMode struct {
+		enabled    bool
+		keyManager *router.KeyManager
+		rt         *router.Router
+		proxies    map[string]*proxy.Proxy // per-provider proxy keyed by provider name
+		apiKeys    map[string]string       // provider name → upstream API key
+	}
+	var rm *routerMode
+	if cfg.Router.Enabled {
+		km := router.NewKeyManager(store)
+		var providers []router.Provider
+		providerProxies := make(map[string]*proxy.Proxy)
+		providerKeys := make(map[string]string)
+		for _, pc := range cfg.Router.Providers {
+			hp := router.NewHTTPProvider(pc.Name, pc.BaseURL, pc.ModelGlob, pc.APIKey)
+			providers = append(providers, hp)
+			// Create a dedicated proxy per provider so each targets its own upstream.
+			pp, err := proxy.New(pc.Name, hp.BaseURL())
+			if err != nil {
+				log.Fatalf("failed to init proxy for provider %s: %v", pc.Name, err)
+			}
+			providerProxies[pc.Name] = pp
+			providerKeys[pc.Name] = hp.APIKey()
+		}
+		rm = &routerMode{
+			enabled:    true,
+			keyManager: km,
+			rt:         router.New(providers, cfg.Upstream),
+			proxies:    providerProxies,
+			apiKeys:    providerKeys,
+		}
+		log.Printf("Router mode enabled with %d provider(s)", len(providers))
+	}
+
 	// Initialize plugins
 	ctx := context.Background()
 	var pluginList []plugin.Plugin
@@ -295,12 +333,41 @@ func main() {
 		// Use the request body after plugins may have modified it.
 		body = reqCtx.Body
 
+		// Router mode: if enabled and the client key is a managed key,
+		// validate it and select the appropriate provider proxy. The router
+		// does NOT replace the proxy pipeline — it only resolves the correct
+		// upstream target. All plugin hooks, streaming, and governance still apply.
+		activeTarget := target
+		if rm != nil {
+			apiKey := r.Header.Get("x-api-key")
+			if mode := rm.rt.DetectMode(apiKey); mode == "router" {
+				valid, err := rm.keyManager.Validate(r.Context(), apiKey)
+				if err != nil || !valid {
+					writeAnthropicError(w, "invalid API key", http.StatusUnauthorized, 0, "")
+					return
+				}
+				// Select provider based on model name.
+				provider := rm.rt.SelectProvider(respCtx.Model)
+				if provider != nil {
+					if pp, ok := rm.proxies[provider.Name()]; ok {
+						activeTarget = pp
+						// Inject the provider's upstream API key into the request
+						// headers so the proxy forwards it to the correct backend.
+						if key, exists := rm.apiKeys[provider.Name()]; exists {
+							reqCtx.Headers["x-api-key"] = key
+							reqCtx.Headers["authorization"] = "Bearer " + key
+						}
+					}
+				}
+			}
+		}
+
 		if isStream {
 			var isToolBlocked func(name string) bool
 			if toolPolicy != nil {
 				isToolBlocked = toolPolicy.IsBlocked
 			}
-			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
+			respBody, usage, toolCalls, stopReason, duration, err := activeTarget.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return
@@ -316,7 +383,7 @@ func main() {
 			respCtx.DurationMs = duration
 			respCtx.StatusCode = http.StatusOK
 		} else {
-			pr, err := target.HandleRequest(body, reqCtx.Headers)
+			pr, err := activeTarget.HandleRequest(body, reqCtx.Headers)
 			if err != nil {
 				log.Printf("proxy error: %v", err)
 				http.Error(w, "upstream error", http.StatusBadGateway)

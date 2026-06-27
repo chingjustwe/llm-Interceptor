@@ -37,3 +37,18 @@ plugins:
   tool-policy:
     blocked_tools: []
     allowed_tools: []
+
+# Router mode: when enabled, the gateway manages API keys (sk-lli-* prefix)
+# and routes requests to different LLM providers based on model name patterns.
+# Disabled by default — the gateway operates in passthrough mode.
+router:
+  enabled: false
+  providers:
+    - name: anthropic
+      base_url: "https://api.anthropic.com"
+      model_glob: "claude-*"
+      api_key: "${ANTHROPIC_API_KEY}"
+    - name: openai
+      base_url: "https://api.openai.com"
+      model_glob: "gpt-*"
+      api_key: "${OPENAI_API_KEY}"

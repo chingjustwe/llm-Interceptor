@@ -39,6 +39,12 @@ func NewHTTPProvider(name, baseURL, modelGlob, apiKey string) *HTTPProvider {
 // Name returns the human-readable identifier for this provider.
 func (p *HTTPProvider) Name() string { return p.name }
 
+// BaseURL returns the provider's upstream URL (scheme + host, no trailing slash).
+func (p *HTTPProvider) BaseURL() string { return p.baseURL }
+
+// APIKey returns the provider's API key used for authenticating upstream requests.
+func (p *HTTPProvider) APIKey() string { return p.apiKey }
+
 // MatchModel checks whether the given model name matches this provider's glob
 // pattern. An empty pattern or "*" matches all models. Otherwise, the pattern
 // is treated as a prefix match with an optional trailing wildcard.
