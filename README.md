@@ -55,10 +55,10 @@
 git clone https://github.com/chingjustwe/llm-interceptor.git
 cd llm-interceptor
 
-# Install frontend deps (first time only)
-(cd ui && npm install)
+# Install frontend deps (first time only) and build SPA
+(cd ui && npm install && npm run build)
 
-# Build (Go binary + embedded SPA)
+# Build Go binary (embeds ui/dist/ automatically)
 go build -o llm-interceptor ./cmd/llm-interceptor/
 
 # Run with default config (passthrough mode)
@@ -71,16 +71,35 @@ See [config.example.yaml](config.example.yaml) for all available options.
 
 ## Development
 
+### Backend (Go)
+
 ```bash
-# Run Go tests
+# Build
+go build -o llm-interceptor ./cmd/llm-interceptor/
+
+# Test
 go test ./...
 
-# Run frontend dev server (proxies /api to Go backend at :8081)
-cd ui && npm run dev
-
-# Build frontend for production
-cd ui && npm run build
+# Run locally
+./llm-interceptor config.example.yaml
 ```
+
+### Frontend (React SPA)
+
+```bash
+cd ui
+
+# Install dependencies
+npm install
+
+# Dev server (proxies /api to backend at :8081)
+npm run dev
+
+# Production build
+npm run build
+```
+
+The SPA is embedded in the Go binary via `embed.FS`. During development, run `npm run dev` for hot-reload (proxies `/api` to the Go backend running separately on `:8081`), then build with `npm run build` before `go build` to embed the latest UI.
 
 ## License
 

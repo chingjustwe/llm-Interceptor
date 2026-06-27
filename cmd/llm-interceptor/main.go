@@ -80,8 +80,7 @@ func writeAnthropicError(w http.ResponseWriter, message string, statusCode int, 
 	})
 }
 
-//go:embed ui/dist/index.html
-//go:embed ui/dist/assets
+//go:embed ui/dist/*
 var uiFS embed.FS
 
 func staticFileServer() http.Handler {

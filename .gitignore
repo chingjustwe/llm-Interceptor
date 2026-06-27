@@ -32,7 +32,11 @@ node_modules/
 # UI build output
 ui/dist/
 ui/src/*.js
+cmd/llm-interceptor/ui/dist/
 
+
+# Skills
+skills-lock.json
 
 # Docs - superpowers
 docs/superpowers/

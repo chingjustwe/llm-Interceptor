@@ -136,7 +136,7 @@ Plugin registration order in `main.go`:
 - Vite + React 18 + TypeScript + Tailwind CSS
 - Pages: Requests, Sessions, Cost Dashboard, Key Management
 - SSE live events displayed as toast notifications
-- Dev server proxies `/api` to Go backend at `localhost:8081`
+- Dev server proxies `/api` to Go backend at `localhost:8080`
 - Production: built to `ui/dist/`, embedded via `//go:embed ui/dist/*`
 
 ## Development Workflow
