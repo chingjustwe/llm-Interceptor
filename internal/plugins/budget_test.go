@@ -33,8 +33,8 @@ func TestBudgetPlugin_SessionLimit_Blocks(t *testing.T) {
 	if !hook.Block {
 		t.Fatal("expected Block=true")
 	}
-	if hook.StatusCode != 429 {
-		t.Fatalf("expected status 429, got %d", hook.StatusCode)
+	if hook.StatusCode != 402 {
+		t.Fatalf("expected status 402, got %d", hook.StatusCode)
 	}
 	if hook.RetryAfterSec != 0 {
 		t.Fatalf("expected RetryAfterSec=0 for budget block, got %d", hook.RetryAfterSec)
@@ -86,8 +86,8 @@ func TestBudgetPlugin_DailyLimit_Blocks(t *testing.T) {
 	if !hook.Block {
 		t.Fatal("expected Block=true")
 	}
-	if hook.StatusCode != 429 {
-		t.Fatalf("expected status 429, got %d", hook.StatusCode)
+	if hook.StatusCode != 402 {
+		t.Fatalf("expected status 402, got %d", hook.StatusCode)
 	}
 	if hook.RetryAfterSec != 0 {
 		t.Fatalf("expected RetryAfterSec=0 for budget block, got %d", hook.RetryAfterSec)
