@@ -201,7 +201,15 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 // transparently synthesises a follow-up request: it sends a tool_result back
 // to the LLM saying the tool was blocked, and forwards the LLM's subsequent
 // response (after the LLM adapts) to the client instead of the original.
+// A follow-up budget of 3 prevents infinite recursion if the LLM keeps
+// returning a blocked tool in its adaptive responses.
 func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool) ([]byte, *UsageData, []ToolCall, string, int64, error) {
+	return p.handleRequestStream(body, headers, w, isToolBlocked, 3)
+}
+
+// handleRequestStream is the internal implementation with a follow-up budget
+// to prevent infinite recursion when the LLM repeatedly returns blocked tools.
+func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool, followUpBudget int) ([]byte, *UsageData, []ToolCall, string, int64, error) {
 	start := time.Now()
 
 	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
@@ -244,13 +252,15 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 		return nil, nil, nil, "", 0, err
 	}
 
-	// If any tool_use is blocked, synthesise a follow-up request.
-	if isToolBlocked != nil {
+	// If any tool_use is blocked and we still have budget, synthesise a
+	// follow-up request. We pass the same isToolBlocked so the follow-up
+	// response is also checked (the LLM may try the same tool again).
+	if isToolBlocked != nil && followUpBudget > 0 {
 		for _, tc := range tools {
 			if isToolBlocked(tc.Name) {
 				newBody := buildFollowUpRequest(body, contentBlocks, tools, isToolBlocked)
 				if newBody != nil {
-					return p.HandleRequestStream(newBody, headers, w, nil)
+					return p.handleRequestStream(newBody, headers, w, isToolBlocked, followUpBudget-1)
 				}
 				break
 			}

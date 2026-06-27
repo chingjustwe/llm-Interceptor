@@ -350,3 +350,58 @@ func TestHandleRequestStream_ToolBlockedFollowUp(t *testing.T) {
 	}
 	assertSSEValid(t, rec.Body.String())
 }
+
+func TestHandleRequestStream_FollowUpBudgetExhausted(t *testing.T) {
+	var requestCount int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		// Always return a Bash tool_use — simulates an LLM that ignores
+		// tool_result and keeps retrying the blocked tool.
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Let me try bash again\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_bash_002\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":5}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	target, err := New("test-budget-exhausted", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	isToolBlocked := func(name string) bool {
+		return name == "Bash"
+	}
+
+	rec := httptest.NewRecorder()
+	_, _, tools, _, _, err := target.HandleRequestStream(
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		map[string]string{"x-api-key": "test-key"},
+		rec,
+		isToolBlocked,
+	)
+	if err != nil {
+		t.Fatalf("HandleRequestStream failed: %v", err)
+	}
+	// Even with follow-up budget exhausted, the response body should still
+	// be valid — it's the LLM's final response (which happens to contain
+	// a blocked tool since the LLM wouldn't adapt).
+	if len(tools) != 1 || tools[0].Name != "Bash" {
+		t.Fatalf("expected final response to still contain Bash tool_use, got %v", tools)
+	}
+	// 4 requests: original + 3 follow-ups (budget=3, one per retry).
+	if requestCount != 4 {
+		t.Fatalf("expected 4 requests (original + 3 follow-ups), got %d", requestCount)
+	}
+}
