@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import RequestsList from './RequestsList'
 import SessionsList from './SessionsList'
 import CostDashboard from './CostDashboard'
+import KeyManagement from './KeyManagement'
 import Toast from './Toast'
 
 type ToastData = {
@@ -10,7 +11,7 @@ type ToastData = {
   message: string
 }
 
-type View = 'requests' | 'sessions' | 'cost'
+type View = 'requests' | 'sessions' | 'cost' | 'keys'
 
 type NavItem = {
   id: View
@@ -22,6 +23,7 @@ const navItems: NavItem[] = [
   { id: 'requests', label: 'Requests', icon: '⚡' },
   { id: 'sessions', label: 'Sessions', icon: '⊞' },
   { id: 'cost', label: 'Cost', icon: '$' },
+  { id: 'keys', label: 'Keys', icon: '🔑' },
 ]
 
 export default function App() {
@@ -91,6 +93,7 @@ export default function App() {
           {activeView === 'requests' && <RequestsList />}
           {activeView === 'sessions' && <SessionsList />}
           {activeView === 'cost' && <CostDashboard />}
+          {activeView === 'keys' && <KeyManagement />}
         </div>
       </main>
 

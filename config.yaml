@@ -7,18 +7,18 @@ log:
   response_body: false
 
 storage:
-  #type: sqlite
-  #sqlite:
-  #  path: "~/.llm-interceptor/data.db"
-  type: postgres
-  postgres:
-    connection_string: "postgres://llmproxy:llmproxy@localhost:5432/llmproxy?sslmode=disable"
+  type: sqlite
+  sqlite:
+    path: "~/.llm-interceptor/data.db"
+  #type: postgres
+  #postgres:
+  #  connection_string: "postgres://llmproxy:llmproxy@localhost:5432/llmproxy?sslmode=disable"
 
 state_store:
-  #type: memory
-  type: redis
-  redis:
-    url: "redis://:mypassword@localhost:6379/0"
+  type: memory
+  #type: redis
+  #redis:
+  #  url: "redis://:mypassword@localhost:6379/0"
 
 plugins:
   otel-exporter:

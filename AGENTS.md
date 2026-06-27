@@ -9,7 +9,7 @@ Local-first, open-source LLM gateway. Transparent proxy, observability (OTel), g
 - **Database:** SQLite (`modernc.org/sqlite`), PostgreSQL (`pgx`)
 - **State:** In-memory, Redis
 - **Observability:** OpenTelemetry
-- **Frontend (Phase 5):** React, Vite, Tailwind CSS, TypeScript
+- **Frontend:** React, Vite, Tailwind CSS, TypeScript
 
 ## Directory Layout
 ```
