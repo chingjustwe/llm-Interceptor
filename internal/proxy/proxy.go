@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -258,6 +259,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 	if isToolBlocked != nil && followUpBudget > 0 {
 		for _, tc := range tools {
 			if isToolBlocked(tc.Name) {
+				log.Printf("tool- policy: blocked tool_use %q in response", tc.Name)
 				newBody := buildFollowUpRequest(body, contentBlocks, tools, isToolBlocked)
 				if newBody != nil {
 					return p.handleRequestStream(newBody, headers, w, isToolBlocked, followUpBudget-1)
@@ -268,6 +270,13 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 	}
 
 	// No blocking needed — forward the buffered SSE to the client.
+	if isToolBlocked != nil && followUpBudget == 0 {
+		for _, tc := range tools {
+			if isToolBlocked(tc.Name) {
+				log.Printf("tool-policy: follow-up budget exhausted, allowing blocked tool_use %q", tc.Name)
+			}
+		}
+	}
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
