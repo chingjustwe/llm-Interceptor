@@ -123,6 +123,18 @@ npm run build
 
 The SPA is embedded in the Go binary via `embed.FS`. During development, run `npm run dev` for hot-reload (proxies `/api` to the Go backend running separately on `:8080`), then build with `npm run build` before `go build` to embed the latest UI.
 
+## Roadmap
+
+| Phase | Focus | Key Deliverables | Dependencies |
+|-------|-------|------------------|-------------|
+| **1** | Foundation | Enhanced data capture, OpenAI protocol support, storage schema migration | — |
+| **2** | UI Overhaul | Dashboard, richer pages, dark mode, layout redesign | Phase 1 |
+| **3** | Agent Integration | Agent info API, one-click config for Claude Code / OpenCode / Cline | Phase 1 |
+| **4** | Admin Console | JWT auth, config CRUD in UI, SSE hot-reload | Phase 3 |
+| **5** | Hardening | Prometheus, alerting, perf, tests, OpenAPI | Phase 4 |
+
+See [docs/roadmap.md](docs/roadmap.md) for the full detailed plan.
+
 ## License
 
 MIT
