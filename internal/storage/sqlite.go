@@ -125,12 +125,12 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 	var args []any
 
 	if filter.SessionID != nil {
-		conditions = append(conditions, "session_id = ?")
-		args = append(args, *filter.SessionID)
+		conditions = append(conditions, "session_id LIKE ?")
+		args = append(args, "%"+*filter.SessionID+"%")
 	}
 	if filter.Model != nil {
-		conditions = append(conditions, "model = ?")
-		args = append(args, *filter.Model)
+		conditions = append(conditions, "model LIKE ?")
+		args = append(args, "%"+*filter.Model+"%")
 	}
 	if filter.From != nil {
 		conditions = append(conditions, "created_at >= ?")

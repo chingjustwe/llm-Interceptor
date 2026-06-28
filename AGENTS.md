@@ -25,6 +25,10 @@ internal/
 ├── api/                    REST API + SSE for web UI
 ├── router/                 Mode detection + provider routing
 └── translate/              Protocol translation
+deploy/                     Docker Compose extras (PostgreSQL, Redis, OTel)
+Dockerfile                  Multi-stage Docker build
+docker-compose.yml          One-click startup with Docker Compose
+config.docker.yml           Docker-optimized configuration
 ```
 
 ## Phases
@@ -45,6 +49,7 @@ internal/
 - Every bugfix MUST include one or more tests that reproduce the bug before the fix and pass after it. No exception.
 - Before claiming work is complete, run `go build ./... && go vet ./... && go test ./... -v` and confirm all green.
 - Commit granularly: one logical change per commit.
+- **README/AGENTS.md sync**: Any change to the project (new features, config changes, CLI flags, Docker/CI setup, dependency updates) MUST check if README.md and/or AGENTS.md need updating. Keep both files accurate — they are the primary documentation for humans and agents.
 
 ## Key Principles
 - Plugin architecture via Go interfaces (in-process)

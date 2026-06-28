@@ -139,13 +139,13 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 	argIdx := 1
 
 	if filter.SessionID != nil {
-		conditions = append(conditions, fmt.Sprintf("session_id = $%d", argIdx))
-		args = append(args, *filter.SessionID)
+		conditions = append(conditions, fmt.Sprintf("session_id ILIKE $%d", argIdx))
+		args = append(args, "%"+*filter.SessionID+"%")
 		argIdx++
 	}
 	if filter.Model != nil {
-		conditions = append(conditions, fmt.Sprintf("model = $%d", argIdx))
-		args = append(args, *filter.Model)
+		conditions = append(conditions, fmt.Sprintf("model ILIKE $%d", argIdx))
+		args = append(args, "%"+*filter.Model+"%")
 		argIdx++
 	}
 	if filter.From != nil {

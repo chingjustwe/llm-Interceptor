@@ -65,6 +65,28 @@ go build -o llm-interceptor ./cmd/llm-interceptor/
 ./llm-interceptor config.example.yaml
 ```
 
+### Docker Compose (one-click)
+
+```bash
+# Build and start (requires Docker)
+ANTHROPIC_API_KEY=sk-ant-... docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+The app runs with SQLite + in-memory state by default, no external dependencies needed. For PostgreSQL, Redis, or OTel, append the relevant compose files from `deploy/`:
+
+```bash
+docker compose -f docker-compose.yml \
+  -f deploy/docker-compose-pg.yml \
+  -f deploy/docker-compose-redis.yml \
+  up -d
+```
+
 ## Configuration
 
 See [config.example.yaml](config.example.yaml) for all available options.
@@ -92,14 +114,14 @@ cd ui
 # Install dependencies
 npm install
 
-# Dev server (proxies /api to backend at :8081)
+# Dev server (proxies /api to backend at :8080)
 npm run dev
 
 # Production build
 npm run build
 ```
 
-The SPA is embedded in the Go binary via `embed.FS`. During development, run `npm run dev` for hot-reload (proxies `/api` to the Go backend running separately on `:8081`), then build with `npm run build` before `go build` to embed the latest UI.
+The SPA is embedded in the Go binary via `embed.FS`. During development, run `npm run dev` for hot-reload (proxies `/api` to the Go backend running separately on `:8080`), then build with `npm run build` before `go build` to embed the latest UI.
 
 ## License
 

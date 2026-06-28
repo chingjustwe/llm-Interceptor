@@ -57,15 +57,23 @@ func (h *Handler) Register(r chi.Router) {
 	r.Patch("/api/keys/{id}/disable", h.disableKey)
 }
 
-// listRequests returns a paginated list of all stored requests, ordered by
-// creation time descending. Supports limit and offset query parameters.
+// listRequests returns a paginated list of stored requests, ordered by
+// creation time descending. Accepts optional query params: limit, offset,
+// model (exact match), and session_id (exact match).
 func (h *Handler) listRequests(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	reqs, err := h.store.QueryRequests(r.Context(), types.RequestFilter{Limit: limit, Offset: offset})
+	filter := types.RequestFilter{Limit: limit, Offset: offset}
+	if m := r.URL.Query().Get("model"); m != "" {
+		filter.Model = &m
+	}
+	if s := r.URL.Query().Get("session_id"); s != "" {
+		filter.SessionID = &s
+	}
+	reqs, err := h.store.QueryRequests(r.Context(), filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -107,10 +115,15 @@ func (h *Handler) getSessionRequests(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(reqs)
 }
 
-// listSessions aggregates all stored requests by session ID and returns
-// a list of session summaries (ID + request count).
+// listSessions aggregates stored requests by session ID and returns
+// a list of session summaries (ID + request count). Accepts optional
+// model query param to filter sessions by model.
 func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
-	reqs, err := h.store.QueryRequests(r.Context(), types.RequestFilter{Limit: 1000})
+	filter := types.RequestFilter{Limit: 1000}
+	if m := r.URL.Query().Get("model"); m != "" {
+		filter.Model = &m
+	}
+	reqs, err := h.store.QueryRequests(r.Context(), filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

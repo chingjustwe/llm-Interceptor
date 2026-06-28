@@ -1,0 +1,45 @@
+listen: "0.0.0.0:8080"
+upstream: "https://api.anthropic.com"
+metric_prefix: "llm_proxy."
+
+log:
+  request_body: false
+  response_body: false
+
+storage:
+  type: sqlite
+  sqlite:
+    path: "/data/data.db"
+
+state_store:
+  type: memory
+
+plugins:
+  otel-exporter:
+    enabled: false
+    endpoint: "otel-collector:4318"
+    headers: {}
+    max_attr_len: 65535
+  cost-tracker:
+    enabled: true
+  budget:
+    max_cost_per_session: 0.50
+    max_cost_per_day: 0
+  rate-limit:
+    requests_per_minute: 60
+    tokens_per_minute: 0
+  tool-policy:
+    blocked_tools: []
+    allowed_tools: []
+
+router:
+  enabled: false
+  providers:
+    - name: anthropic
+      base_url: "https://api.anthropic.com"
+      model_glob: "claude-*"
+      api_key: "${ANTHROPIC_API_KEY}"
+    - name: openai
+      base_url: "https://api.openai.com"
+      model_glob: "gpt-*"
+      api_key: "${OPENAI_API_KEY}"
