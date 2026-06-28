@@ -1,6 +1,6 @@
 # LLM Interceptor — Project Context
 
-Status: All 5 phases complete, 71 commits, 11 test files, all tests passing.
+Status: All 5 phases + Phase 2 UI Overhaul complete, 73 commits, 12 test files, all tests passing.
 
 ## Project
 Local-first, open-source LLM gateway — transparent proxy, OTel observability,
@@ -11,7 +11,7 @@ protocol translation (Anthropic ↔ OpenAI), and a React SPA — in a single Go 
 - Module: `github.com/chingjustwe/llm-interceptor` (**all lowercase**)
 - Go 1.26.3, Node v24.16.0
 - Key deps: `chi/v5`, `yaml.v3`, `modernc.org/sqlite`, `jackc/pgx/v5`,
-  `redis/go-redis/v9`, `otel`, `golang.org/x/crypto`
+  `redis/go-redis/v9`, `otel`, `golang.org/x/crypto`; frontend: `react`, `recharts`, `tailwindcss`
 - Remote: `git@github.com:chingjustwe/llm-interceptor.git`
 
 ## Directory Layout
@@ -40,6 +40,7 @@ ui/                         React SPA (Vite + TypeScript + Tailwind)
 | 3 | Governance (cost/budget/ratelimit/tool-policy), Redis, PostgreSQL | ✅ |
 | 4 | LLM Router, API key management (bcrypt), protocol translation | ✅ |
 | 5 | React SPA (Vite + Tailwind): requests, sessions, cost, keys, SSE live | ✅ |
+| 2.UI | UI Overhaul: Dashboard, Error Analysis, Model Analytics pages; enhanced Requests/Sessions/Cost pages; dark mode; recharts charts; reusable components (StatsCard, DataTable, PageHeader, FilterBar); backend timeseries/export/sessions-aggregate APIs | ✅ |
 
 ## Architecture Principles
 - **Plugin architecture** via Go interfaces (`plugin.Plugin`) — in-process, not out-of-process
@@ -124,9 +125,11 @@ Plugin registration order in `main.go`:
 | POST | `/v1/chat/completions` | LLM proxy (OpenAI Chat Completions API) |
 | GET | `/api/requests` | List stored requests (filters: model, session_id, stop_reason, error_type, min_duration, max_duration, status_code) |
 | GET | `/api/requests/{id}` | Get single request |
-| GET | `/api/sessions` | List session summaries |
+| GET | `/api/requests/export` | Export requests as CSV/JSON download |
+| GET | `/api/sessions` | List session summaries (with aggregated stats: total_tokens, total_cost, avg_duration, models, error_count) |
 | GET | `/api/sessions/{id}/requests` | Get session's requests |
-| GET | `/api/stats` | Cost + usage statistics |
+| GET | `/api/stats` | Cost + usage statistics (includes avg_latency_ms, p50/p95/p99 latency, errors_by_type) |
+| GET | `/api/stats/timeseries` | Timeseries aggregates by minute/hour/day (params: from, to, granularity) |
 | POST | `/api/keys` | Generate API key (router mode only) |
 | GET | `/api/keys` | List API keys (router mode only) |
 | PATCH | `/api/keys/{id}/disable` | Disable API key (router mode only) |
@@ -135,8 +138,10 @@ Plugin registration order in `main.go`:
 | `/*` | SPA static files (via `embed.FS`) | |
 
 ## Frontend (`ui/`)
-- Vite + React 18 + TypeScript + Tailwind CSS
-- Pages: Requests, Sessions, Cost Dashboard, Key Management
+- Vite + React 18 + TypeScript + Tailwind CSS (+ recharts for charts)
+- Pages: Dashboard, Requests, Sessions, Cost Dashboard, Error Analysis, Model Analytics, Key Management
+- Reusable layout components: StatsCard, DataTable, PageHeader, FilterBar (in `ui/src/components/`)
+- Dark mode toggle (persisted to localStorage, respects `prefers-color-scheme`)
 - SSE live events displayed as toast notifications
 - Dev server proxies `/api` to Go backend at `localhost:8080`
 - Production: built to `ui/dist/`, embedded via `//go:embed ui/dist/*`

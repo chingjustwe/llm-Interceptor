@@ -53,4 +53,63 @@
     position: relative;
     z-index: 1;
   }
+
+  /* Light mode overrides — applied when .dark class is absent from <html> */
+  html:not(.dark) #root .app-shell {
+    --bg-primary: #ffffff;
+    --bg-sidebar: #f4f4f5;
+    --bg-card: #ffffff;
+    --bg-elevated: #fafafa;
+    --border-color: #e4e4e7;
+    --text-primary: #18181b;
+    --text-secondary: #52525b;
+    --text-muted: #a1a1aa;
+  }
+  html:not(.dark) .app-shell,
+  html:not(.dark) .app-shell nav,
+  html:not(.dark) .app-shell main {
+    background-color: var(--bg-primary) !important;
+  }
+  html:not(.dark) .app-shell nav {
+    background-color: var(--bg-sidebar) !important;
+    border-color: var(--border-color) !important;
+  }
+  html:not(.dark) .app-shell [class*="bg-zinc-900"],
+  html:not(.dark) .app-shell [class*="bg-zinc-950"] {
+    background-color: var(--bg-card) !important;
+  }
+  html:not(.dark) .app-shell [class*="bg-zinc-800"] {
+    background-color: var(--bg-elevated) !important;
+  }
+  html:not(.dark) .app-shell [class*="border-zinc-800"],
+  html:not(.dark) .app-shell [class*="border-zinc-700"] {
+    border-color: var(--border-color) !important;
+  }
+  html:not(.dark) .app-shell [class*="text-zinc-100"] {
+    color: var(--text-primary) !important;
+  }
+  html:not(.dark) .app-shell [class*="text-zinc-200"],
+  html:not(.dark) .app-shell [class*="text-zinc-300"],
+  html:not(.dark) .app-shell [class*="text-zinc-400"] {
+    color: var(--text-secondary) !important;
+  }
+  html:not(.dark) .app-shell [class*="text-zinc-500"],
+  html:not(.dark) .app-shell [class*="text-zinc-600"] {
+    color: var(--text-muted) !important;
+  }
+  html:not(.dark) .app-shell input,
+  html:not(.dark) .app-shell select {
+    background-color: var(--bg-elevated) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+  }
+  html:not(.dark) .app-shell [class*="font-mono"] {
+    color: var(--text-secondary) !important;
+  }
+  html:not(.dark) .app-shell [class*="text-cyan-400"] {
+    color: #0891b2 !important;
+  }
+  html:not(.dark) .app-shell [class*="text-indigo-400"] {
+    color: #6366f1 !important;
+  }
 }

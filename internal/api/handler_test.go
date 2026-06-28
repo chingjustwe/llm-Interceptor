@@ -426,6 +426,251 @@ func TestCostStats_ErrorTrackingWithTypes(t *testing.T) {
 	}
 }
 
+func TestListSessions_Aggregates(t *testing.T) {
+	reqs := []types.StoredRequest{
+		{
+			ID: "r1", SessionID: "sess_a", Model: "claude-sonnet-4",
+			Usage: types.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			DurationMs: 200, StatusCode: 200,
+		},
+		{
+			ID: "r2", SessionID: "sess_a", Model: "claude-sonnet-4",
+			Usage: types.TokenUsage{InputTokens: 30, OutputTokens: 20, CacheReadTokens: 10},
+			DurationMs: 300, StatusCode: 200,
+		},
+		{
+			ID: "r3", SessionID: "sess_a", Model: "gpt-4o",
+			Usage: types.TokenUsage{InputTokens: 50, OutputTokens: 50, CacheCreationTokens: 25},
+			DurationMs: 500, StatusCode: 429,
+		},
+		{
+			ID: "r4", SessionID: "sess_b", Model: "claude-haiku",
+			Usage: types.TokenUsage{InputTokens: 10, OutputTokens: 10},
+			DurationMs: 100, StatusCode: 200,
+		},
+	}
+	h := setupTestHandler(reqs)
+
+	r := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	h.listSessions(w, r)
+
+	var got []struct {
+		ID          string   `json:"id"`
+		Count       int      `json:"count"`
+		TotalTokens int64    `json:"total_tokens"`
+		TotalCost   float64  `json:"total_cost"`
+		AvgDuration float64  `json:"avg_duration"`
+		ModelCount  int      `json:"model_count"`
+		Models      []string `json:"models"`
+		ErrorCount  int      `json:"error_count"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+
+	// Find sess_a
+	var sessA, sessB any
+	for _, s := range got {
+		switch s.ID {
+		case "sess_a":
+			sessA = s
+		case "sess_b":
+			sessB = s
+		}
+	}
+	if sessA == nil {
+		t.Fatal("sess_a not found")
+	}
+	if sessB == nil {
+		t.Fatal("sess_b not found")
+	}
+
+	a := got[0]
+	if got[0].ID != "sess_a" {
+		// swap so a is sess_a
+		for i := range got {
+			if got[i].ID == "sess_a" {
+				got[0], got[i] = got[i], got[0]
+				break
+			}
+		}
+		a = got[0]
+		b := got[1]
+		if a.ID != "sess_a" || b.ID != "sess_b" {
+			t.Fatalf("expected sess_a and sess_b, got %s and %s", a.ID, b.ID)
+		}
+		_ = b
+	}
+
+	// sess_a: 3 requests
+	// tokens: (100+50+0+0)=150 + (30+20+10+0)=60 + (50+50+0+25)=125 = 335
+	// cost: (150/1e6)*2=0.0003 + (50/1e6)*2=0.0001 + (100/1e6)*2=0.0002 = 0.0006
+	// duration: avg(200,300,500) = 1000/3 = 333.333... → 333.3
+	// models: claude-sonnet-4, gpt-4o → count=2
+	// errors: 1 (r3, status 429)
+	if a.Count != 3 {
+		t.Errorf("sess_a count: expected 3, got %d", a.Count)
+	}
+	if a.TotalTokens != 335 {
+		t.Errorf("sess_a total_tokens: expected 335, got %d", a.TotalTokens)
+	}
+	if a.TotalCost != 0.0 {
+		t.Errorf("sess_a total_cost: expected 0.0, got %f", a.TotalCost)
+	}
+	if a.AvgDuration != 333.3 {
+		t.Errorf("sess_a avg_duration: expected 333.3, got %f", a.AvgDuration)
+	}
+	if a.ModelCount != 2 {
+		t.Errorf("sess_a model_count: expected 2, got %d", a.ModelCount)
+	}
+	if a.ErrorCount != 1 {
+		t.Errorf("sess_a error_count: expected 1, got %d", a.ErrorCount)
+	}
+
+	// sess_b: 1 request
+	b := got[1]
+	if b.ID != "sess_b" {
+		b = got[0]
+	}
+	if b.Count != 1 {
+		t.Errorf("sess_b count: expected 1, got %d", b.Count)
+	}
+	if b.TotalTokens != 20 {
+		t.Errorf("sess_b total_tokens: expected 20, got %d", b.TotalTokens)
+	}
+	if b.AvgDuration != 100.0 {
+		t.Errorf("sess_b avg_duration: expected 100.0, got %f", b.AvgDuration)
+	}
+	if b.ModelCount != 1 {
+		t.Errorf("sess_b model_count: expected 1, got %d", b.ModelCount)
+	}
+	if b.ErrorCount != 0 {
+		t.Errorf("sess_b error_count: expected 0, got %d", b.ErrorCount)
+	}
+}
+
+func TestTimeseriesStats(t *testing.T) {
+	reqs := []types.StoredRequest{
+		{ID: "r1", Model: "claude", Usage: types.TokenUsage{InputTokens: 10, OutputTokens: 20}, StatusCode: 200, CreatedAt: 1000},
+		{ID: "r2", Model: "claude", Usage: types.TokenUsage{InputTokens: 5, OutputTokens: 5}, StatusCode: 429, CreatedAt: 3700},
+		{ID: "r3", Model: "gpt-4", Usage: types.TokenUsage{InputTokens: 10, OutputTokens: 10}, StatusCode: 200, CreatedAt: 7200},
+	}
+	h := setupTestHandler(reqs)
+
+	r := httptest.NewRequest("GET", "/api/stats/timeseries?from=0&to=10000&granularity=hour", nil)
+	w := httptest.NewRecorder()
+	h.timeseriesStats(w, r)
+
+	var resp struct {
+		Granularity string `json:"granularity"`
+		Points      []struct {
+			Timestamp int64   `json:"timestamp"`
+			Requests  int     `json:"requests"`
+			Tokens    int64   `json:"tokens"`
+			CostUSD   float64 `json:"cost_usd"`
+			Errors    int     `json:"errors"`
+		} `json:"points"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Granularity != "hour" {
+		t.Fatalf("expected granularity hour, got %s", resp.Granularity)
+	}
+	// Hour bucket = 3600000ms. Requests at 1000, 3700, 7200 → all in bucket 0.
+	if len(resp.Points) != 1 {
+		t.Fatalf("expected 1 bucket, got %d", len(resp.Points))
+	}
+	p := resp.Points[0]
+	if p.Requests != 3 {
+		t.Errorf("expected 3 requests, got %d", p.Requests)
+	}
+	if p.Tokens != 60 {
+		t.Errorf("expected 60 tokens, got %d", p.Tokens)
+	}
+	if p.Errors != 1 {
+		t.Errorf("expected 1 error, got %d", p.Errors)
+	}
+}
+
+func TestTimeseriesStats_FromAfterTo(t *testing.T) {
+	h := setupTestHandler(nil)
+
+	r := httptest.NewRequest("GET", "/api/stats/timeseries?from=1000&to=500", nil)
+	w := httptest.NewRecorder()
+	h.timeseriesStats(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestExportRequests_CSV(t *testing.T) {
+	reqs := []types.StoredRequest{
+		{ID: "r1", Model: "claude", Method: "POST", Path: "/v1/messages", StatusCode: 200, DurationMs: 100, CreatedAt: 1000, Usage: types.TokenUsage{InputTokens: 10, OutputTokens: 20}},
+	}
+	h := setupTestHandler(reqs)
+
+	r := httptest.NewRequest("GET", "/api/requests/export", nil)
+	w := httptest.NewRecorder()
+	h.exportRequests(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "text/csv" {
+		t.Fatalf("expected Content-Type text/csv, got %s", ct)
+	}
+	cd := w.Header().Get("Content-Disposition")
+	if cd != `attachment; filename="requests.csv"` {
+		t.Fatalf("expected Content-Disposition attachment, got %s", cd)
+	}
+	body := w.Body.String()
+	if !strings.HasPrefix(body, "id,session_id") {
+		t.Fatalf("expected CSV header row, got %s", body[:20])
+	}
+	if !strings.Contains(body, "r1") {
+		t.Fatalf("expected r1 in CSV body")
+	}
+}
+
+func TestExportRequests_JSON(t *testing.T) {
+	reqs := []types.StoredRequest{
+		{ID: "r1", Model: "claude", Method: "POST", Path: "/v1/messages", StatusCode: 200, DurationMs: 100, CreatedAt: 1000, Usage: types.TokenUsage{InputTokens: 10, OutputTokens: 20}},
+		{ID: "r2", Model: "gpt-4", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, DurationMs: 200, CreatedAt: 2000, Usage: types.TokenUsage{InputTokens: 5, OutputTokens: 15}},
+	}
+	h := setupTestHandler(reqs)
+
+	r := httptest.NewRequest("GET", "/api/requests/export?format=json", nil)
+	w := httptest.NewRecorder()
+	h.exportRequests(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %s", ct)
+	}
+	cd := w.Header().Get("Content-Disposition")
+	if cd != `attachment; filename="requests.json"` {
+		t.Fatalf("expected Content-Disposition attachment, got %s", cd)
+	}
+	var got []types.StoredRequest
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(got))
+	}
+}
+
 // strPtr is a helper to create a *string literal.
 func strPtr(s string) *string { return &s }
 

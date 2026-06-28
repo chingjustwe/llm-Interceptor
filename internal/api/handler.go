@@ -4,8 +4,10 @@
 package api
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -47,10 +49,12 @@ func NewHandler(store storage.Backend, st state.Backend) *Handler {
 //	PATCH /api/keys/{id}/disable  — disable an API key
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/api/requests", h.listRequests)
+	r.Get("/api/requests/export", h.exportRequests)
 	r.Get("/api/requests/{id}", h.getRequest)
 	r.Get("/api/sessions/{id}/requests", h.getSessionRequests)
 	r.Get("/api/sessions", h.listSessions)
 	r.Get("/api/stats", h.costStats)
+	r.Get("/api/stats/timeseries", h.timeseriesStats)
 
 	// API key management (requires router mode to be enabled).
 	r.Post("/api/keys", h.generateKey)
@@ -105,6 +109,120 @@ func (h *Handler) listRequests(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(reqs)
 }
 
+// exportRequests returns filtered requests as a downloadable CSV or JSON file.
+// Accepts the same query params as listRequests, plus format (csv|json).
+func (h *Handler) exportRequests(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 10000 {
+		limit = 10000
+	}
+	filter := types.RequestFilter{Limit: limit}
+	if m := r.URL.Query().Get("model"); m != "" {
+		filter.Model = &m
+	}
+	if s := r.URL.Query().Get("session_id"); s != "" {
+		filter.SessionID = &s
+	}
+	if sr := r.URL.Query().Get("stop_reason"); sr != "" {
+		filter.StopReason = &sr
+	}
+	if et := r.URL.Query().Get("error_type"); et != "" {
+		filter.ErrorType = &et
+	}
+	if md := r.URL.Query().Get("min_duration"); md != "" {
+		if v, err := strconv.ParseInt(md, 10, 64); err == nil {
+			filter.MinDuration = &v
+		}
+	}
+	if md := r.URL.Query().Get("max_duration"); md != "" {
+		if v, err := strconv.ParseInt(md, 10, 64); err == nil {
+			filter.MaxDuration = &v
+		}
+	}
+	if sc := r.URL.Query()["status_code"]; len(sc) > 0 {
+		for _, s := range sc {
+			if v, err := strconv.Atoi(s); err == nil {
+				filter.StatusCodes = append(filter.StatusCodes, v)
+			}
+		}
+	}
+	reqs, err := h.store.QueryRequests(r.Context(), filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="requests.json"`)
+		json.NewEncoder(w).Encode(reqs)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="requests.csv"`)
+	wr := csv.NewWriter(w)
+	wr.Write([]string{
+		"id", "session_id", "model", "method", "path",
+		"status_code", "duration_ms", "created_at",
+		"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
+		"stop_reason", "error_type", "error_message",
+		"ttft_ms", "temperature", "top_p",
+		"system_prompt", "request_params",
+	})
+	for _, req := range reqs {
+		row := []string{
+			req.ID,
+			req.SessionID,
+			req.Model,
+			req.Method,
+			req.Path,
+			strconv.Itoa(req.StatusCode),
+			strconv.FormatInt(req.DurationMs, 10),
+			strconv.FormatInt(req.CreatedAt, 10),
+			strconv.Itoa(req.Usage.InputTokens),
+			strconv.Itoa(req.Usage.OutputTokens),
+			strconv.Itoa(req.Usage.CacheReadTokens),
+			strconv.Itoa(req.Usage.CacheCreationTokens),
+			ptrStr(req.StopReason),
+			ptrStr(req.ErrorType),
+			ptrStr(req.ErrorMessage),
+			ptrInt64Str(req.TTFTMs),
+			ptrFloat64Str(req.Temperature),
+			ptrFloat64Str(req.TopP),
+			ptrStr(req.SystemPrompt),
+			ptrStr(req.RequestParams),
+		}
+		wr.Write(row)
+	}
+	wr.Flush()
+}
+
+// ptrStr returns the string value of a *string, or "" if nil.
+func ptrStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// ptrInt64Str returns the formatted value of an *int64, or "" if nil.
+func ptrInt64Str(n *int64) string {
+	if n == nil {
+		return ""
+	}
+	return strconv.FormatInt(*n, 10)
+}
+
+// ptrFloat64Str returns the formatted value of a *float64, or "" if nil.
+func ptrFloat64Str(f *float64) string {
+	if f == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*f, 'f', -1, 64)
+}
+
 // getRequest returns a single stored request by its ID.
 func (h *Handler) getRequest(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -152,19 +270,73 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	sessionMap := make(map[string]int)
+
+	type sessionAgg struct {
+		Count       int
+		TotalTokens int64
+		TotalCost   float64
+		DurationSum int64
+		ModelSet    map[string]struct{}
+		ErrorCount  int
+	}
+	sessionMap := make(map[string]*sessionAgg)
 	for _, req := range reqs {
-		if req.SessionID != "" {
-			sessionMap[req.SessionID]++
+		if req.SessionID == "" {
+			continue
+		}
+		agg, ok := sessionMap[req.SessionID]
+		if !ok {
+			agg = &sessionAgg{ModelSet: make(map[string]struct{})}
+			sessionMap[req.SessionID] = agg
+		}
+		agg.Count++
+		tokens := int64(req.Usage.InputTokens + req.Usage.OutputTokens +
+			req.Usage.CacheReadTokens + req.Usage.CacheCreationTokens)
+		agg.TotalTokens += tokens
+		agg.DurationSum += req.DurationMs
+		agg.ModelSet[req.Model] = struct{}{}
+		if h.CalculateCostFn != nil {
+			agg.TotalCost += h.CalculateCostFn(req.Model, req.Usage.InputTokens, req.Usage.OutputTokens)
+		} else {
+			total := float64(req.Usage.InputTokens + req.Usage.OutputTokens)
+			agg.TotalCost += total / 1_000_000 * 2.0
+		}
+		if req.StatusCode >= 400 {
+			agg.ErrorCount++
 		}
 	}
+
 	type sessionSummary struct {
-		ID    string `json:"id"`
-		Count int    `json:"count"`
+		ID          string   `json:"id"`
+		Count       int      `json:"count"`
+		TotalTokens int64    `json:"total_tokens"`
+		TotalCost   float64  `json:"total_cost"`
+		AvgDuration float64  `json:"avg_duration"`
+		ModelCount  int      `json:"model_count"`
+		Models      []string `json:"models"`
+		ErrorCount  int      `json:"error_count"`
 	}
 	summaries := make([]sessionSummary, 0, len(sessionMap))
-	for id, count := range sessionMap {
-		summaries = append(summaries, sessionSummary{ID: id, Count: count})
+	for id, agg := range sessionMap {
+		var avgDuration float64
+		if agg.Count > 0 {
+			avgDuration = float64(agg.DurationSum) / float64(agg.Count)
+		}
+		avgDuration = float64(int64(avgDuration*10+0.5)) / 10.0
+		models := make([]string, 0, len(agg.ModelSet))
+		for m := range agg.ModelSet {
+			models = append(models, m)
+		}
+		summaries = append(summaries, sessionSummary{
+			ID:          id,
+			Count:       agg.Count,
+			TotalTokens: agg.TotalTokens,
+			TotalCost:   round2(agg.TotalCost),
+			AvgDuration: avgDuration,
+			ModelCount:  len(agg.ModelSet),
+			Models:      models,
+			ErrorCount:  agg.ErrorCount,
+		})
 	}
 	json.NewEncoder(w).Encode(summaries)
 }
@@ -219,6 +391,25 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var durations []int64
+	var sumDuration int64
+	for _, req := range reqs {
+		if req.DurationMs > 0 {
+			durations = append(durations, req.DurationMs)
+			sumDuration += req.DurationMs
+		}
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+
+	var avgLatency float64
+	var p50, p95, p99 int64
+	if len(durations) > 0 {
+		avgLatency = float64(sumDuration) / float64(len(durations))
+		p50 = percentile(durations, 0.5)
+		p95 = percentile(durations, 0.95)
+		p99 = percentile(durations, 0.99)
+	}
+
 	errorCount := 0
 	errorCounts := make(map[string]int)
 	for _, req := range reqs {
@@ -258,6 +449,129 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		"per_model":      perModel,
 		"error_rate":     round2(errorRate),
 		"error_counts":   errorCounts,
+		"avg_latency_ms": avgLatency,
+		"p50_latency":    p50,
+		"p95_latency":    p95,
+		"p99_latency":    p99,
+
+	})
+}
+
+// timeseriesStats returns per-bucket request count, token count, cost, and
+// error count for a given time range. Buckets are aligned to the specified
+// granularity (minute, hour, or day).
+func (h *Handler) timeseriesStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	now := time.Now().UnixMilli()
+
+	from := now - 24*60*60*1000 // default: 24 hours ago
+	if f := r.URL.Query().Get("from"); f != "" {
+		if v, err := strconv.ParseInt(f, 10, 64); err == nil {
+			from = v
+		}
+	}
+	to := now
+	if t := r.URL.Query().Get("to"); t != "" {
+		if v, err := strconv.ParseInt(t, 10, 64); err == nil {
+			to = v
+		}
+	}
+
+	if from >= to {
+		http.Error(w, `{"error":"from must be before to"}`, http.StatusBadRequest)
+		return
+	}
+
+	granularity := r.URL.Query().Get("granularity")
+	if granularity == "" {
+		granularity = "hour"
+	}
+
+	var bucketMs int64
+	switch granularity {
+	case "minute":
+		bucketMs = 60 * 1000
+	case "hour":
+		bucketMs = 60 * 60 * 1000
+	case "day":
+		bucketMs = 24 * 60 * 60 * 1000
+	default:
+		http.Error(w, `{"error":"invalid granularity"}`, http.StatusBadRequest)
+		return
+	}
+
+	filter := types.RequestFilter{
+		From:  &from,
+		To:    &to,
+		Limit: 100000,
+	}
+	reqs, err := h.store.QueryRequests(ctx, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type bucket struct {
+		timestamp int64
+		requests  int
+		tokens    int64
+		cost      float64
+		errors    int
+	}
+	buckets := make(map[int64]*bucket)
+	for _, req := range reqs {
+		ts := (req.CreatedAt / bucketMs) * bucketMs
+		b := buckets[ts]
+		if b == nil {
+			b = &bucket{timestamp: ts}
+			buckets[ts] = b
+		}
+		b.requests++
+		tokens := int64(req.Usage.InputTokens + req.Usage.OutputTokens +
+			req.Usage.CacheReadTokens + req.Usage.CacheCreationTokens)
+		b.tokens += tokens
+
+		if h.CalculateCostFn != nil {
+			b.cost += h.CalculateCostFn(req.Model, req.Usage.InputTokens, req.Usage.OutputTokens)
+		} else {
+			total := float64(req.Usage.InputTokens + req.Usage.OutputTokens)
+			b.cost += total / 1_000_000 * 2.0
+		}
+
+		if req.StatusCode >= 400 {
+			b.errors++
+		}
+	}
+
+	sorted := make([]*bucket, 0, len(buckets))
+	for _, b := range buckets {
+		sorted = append(sorted, b)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].timestamp < sorted[j].timestamp
+	})
+
+	type point struct {
+		Timestamp int64   `json:"timestamp"`
+		Requests  int     `json:"requests"`
+		Tokens    int64   `json:"tokens"`
+		CostUSD   float64 `json:"cost_usd"`
+		Errors    int     `json:"errors"`
+	}
+	points := make([]point, len(sorted))
+	for i, b := range sorted {
+		points[i] = point{
+			Timestamp: b.timestamp,
+			Requests:  b.requests,
+			Tokens:    b.tokens,
+			CostUSD:   round2(b.cost),
+			Errors:    b.errors,
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"granularity": granularity,
+		"points":      points,
 	})
 }
 
@@ -352,4 +666,17 @@ func microToDollar(micro int64) float64 {
 // round2 rounds f to 2 decimal places.
 func round2(f float64) float64 {
 	return float64(int64(f*100+0.5)) / 100
+}
+
+// percentile returns the p-th percentile value from a sorted slice of int64
+// durations. Returns 0 if the slice is empty.
+func percentile(sorted []int64, p float64) int64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(float64(len(sorted)-1) * p)
+	if idx < 0 {
+		idx = 0
+	}
+	return sorted[idx]
 }
