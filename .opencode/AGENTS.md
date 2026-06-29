@@ -1,6 +1,6 @@
 # LLM Interceptor — Project Context
 
-Status: All 5 phases + Phase 4 Admin Console (auth, config CRUD, SSE hot-reload, audit log) + Phase 2 UI Overhaul complete, 76 commits, 14 test files, all tests passing.
+Status: All 6 phases complete — Phase 6 (Production Hardening) adds Prometheus metrics, gzip compression, cursor pagination, alerting, structured logging (slog), OpenAPI spec serving, graceful shutdown, and integration tests.
 
 ## Project
 Local-first, open-source LLM gateway — transparent proxy, OTel observability,
@@ -16,20 +16,25 @@ protocol translation (Anthropic ↔ OpenAI), and a React SPA — in a single Go 
 
 ## Directory Layout
 ```
-cmd/llm-interceptor/        main.go (with embed.FS for SPA)
+cmd/llm-interceptor/        main.go (with embed.FS for SPA + OpenAPI spec)
 internal/
-├── config/                 YAML config loader
+├── config/                 YAML config loader (runtime overlay, alerting, compression config)
 ├── auth/                   JWT auth, bcrypt, credential management
 ├── types/                  Shared types (StoredRequest, TokenUsage, RequestFilter, ConfigEntry, AuditEntry)
 ├── plugin/                 Plugin interface + Dispatcher
 ├── proxy/                  HTTP proxy + SSE streaming relay
-├── storage/                Backend interface + SQLite + PostgreSQL
+├── storage/                Backend interface + SQLite + PostgreSQL (with gzip compression)
 ├── state/                  Backend interface + in-memory + Redis
 ├── plugins/                Built-in plugins (otel, cost-tracker, budget, ratelimit, tool-policy)
 ├── api/                    REST API + SSE broker (for web UI)
 ├── router/                 Mode detection + provider routing + key management
-└── translate/              Protocol translation (Anthropic ↔ OpenAI, streaming SSE)
+├── translate/              Protocol translation (Anthropic ↔ OpenAI, streaming SSE)
+├── metrics/                Prometheus metrics (requests_total, duration, tokens, cost, active_requests)
+├── alerting/               Best-effort alerting: evaluator, Slack/Webhook/Email notifiers
+└── log/                    Structured logging setup (slog, JSON/text handlers)
 ui/                         React SPA (Vite + TypeScript + Tailwind)
+tests/                      Integration tests (SQLite + in-memory + HTTP test harness)
+docs/                       OpenAPI 3.0 specification
 ```
 
 ## Implementation Status
@@ -43,6 +48,7 @@ ui/                         React SPA (Vite + TypeScript + Tailwind)
 | 5 | React SPA (Vite + Tailwind): requests, sessions, cost, keys, SSE live | ✅ |
 | 2.UI | UI Overhaul: Dashboard, Error Analysis, Model Analytics pages; enhanced Requests/Sessions/Cost pages; dark mode; recharts charts; reusable components (StatsCard, DataTable, PageHeader, FilterBar); backend timeseries/export/sessions-aggregate APIs | ✅ |
 | 4.C | Admin Console: JWT auth (bcrypt), config CRUD (runtime overlay via DB), SSE hot-reload (ConfigReloader), audit log, admin UI pages (login + config editor) | ✅ |
+| 6 | Production Hardening: Prometheus metrics (`/metrics`), gzip compression (storage), cursor pagination (storage + API), alerting (Slack/Webhook/Email), structured logging (slog), OpenAPI 3.0 spec + Swagger UI, graceful shutdown (configurable timeout + WaitGroup), integration tests | ✅ |
 
 ## Architecture Principles
 - **Plugin architecture** via Go interfaces (`plugin.Plugin`) — in-process, not out-of-process
