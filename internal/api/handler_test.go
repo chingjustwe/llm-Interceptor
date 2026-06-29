@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/chingjustwe/llm-interceptor/internal/auth"
+	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
 	"github.com/chingjustwe/llm-interceptor/internal/types"
@@ -671,6 +675,99 @@ func TestExportRequests_JSON(t *testing.T) {
 	}
 }
 
+func TestAgentInfo_RouterEnabled(t *testing.T) {
+	h := setupTestHandler(nil)
+	h.Config = &config.Config{
+		Listen: "127.0.0.1:9090",
+		Router: config.RouterConfig{
+			Enabled: true,
+			Providers: []config.ProviderConfig{
+				{Name: "anthropic", ModelGlob: "claude-*"},
+				{Name: "openai", ModelGlob: "gpt-*"},
+			},
+		},
+	}
+
+	r := httptest.NewRequest("GET", "/api/agents/info", nil)
+	w := httptest.NewRecorder()
+	h.agentInfo(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	protocols, _ := resp["supported_protocols"].([]any)
+	if len(protocols) != 2 {
+		t.Fatalf("expected 2 protocols, got %d", len(protocols))
+	}
+
+	models, _ := resp["models"].([]any)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+
+	if resp["router_enabled"] != true {
+		t.Fatal("expected router_enabled true")
+	}
+	if resp["default_base_url"] != "http://127.0.0.1:9090" {
+		t.Fatalf("expected base URL http://127.0.0.1:9090, got %v", resp["default_base_url"])
+	}
+	if resp["version"] != "0.3.0" {
+		t.Fatalf("expected version 0.3.0, got %v", resp["version"])
+	}
+}
+
+func TestAgentInfo_RouterDisabled(t *testing.T) {
+	h := setupTestHandler(nil)
+	h.Config = &config.Config{
+		Listen: "127.0.0.1:8080",
+	}
+
+	r := httptest.NewRequest("GET", "/api/agents/info", nil)
+	w := httptest.NewRecorder()
+	h.agentInfo(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["router_enabled"] != false {
+		t.Fatal("expected router_enabled false")
+	}
+	protocols, _ := resp["supported_protocols"].([]any)
+	if len(protocols) != 1 || protocols[0] != "anthropic" {
+		t.Fatalf("expected [anthropic] fallback, got %v", protocols)
+	}
+}
+
+func TestAgentInfo_NilConfig(t *testing.T) {
+	h := setupTestHandler(nil)
+	// Config is nil (not set)
+
+	r := httptest.NewRequest("GET", "/api/agents/info", nil)
+	w := httptest.NewRecorder()
+	h.agentInfo(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["router_enabled"] != false {
+		t.Fatal("expected router_enabled false when config is nil")
+	}
+}
+
 // strPtr is a helper to create a *string literal.
 func strPtr(s string) *string { return &s }
 
@@ -694,6 +791,175 @@ func TestHandlerRegister_RoutesExist(t *testing.T) {
 		if w.Code == http.StatusNotFound {
 			t.Errorf("route %s returned 404", p)
 		}
+	}
+}
+
+func TestLoginHandler_Success(t *testing.T) {
+	dir := t.TempDir()
+	credsFile := filepath.Join(dir, "admin.credentials")
+	hash, err := auth.HashPassword("correct-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.SaveCredentials(credsFile, "admin_test", hash); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	h.CredsFile = credsFile
+
+	body := `{"username":"admin_test","password":"correct-password"}`
+	r := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.loginHandler(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["token"] == "" {
+		t.Fatal("expected non-empty token")
+	}
+	if resp["expires_at"] == "" {
+		t.Fatal("expected expires_at")
+	}
+}
+
+func TestLoginHandler_WrongPassword(t *testing.T) {
+	dir := t.TempDir()
+	credsFile := filepath.Join(dir, "admin.credentials")
+	hash, _ := auth.HashPassword("correct-password")
+	auth.SaveCredentials(credsFile, "admin_test", hash)
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	h.CredsFile = credsFile
+
+	body := `{"username":"admin_test","password":"wrong-password"}`
+	r := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.loginHandler(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestLoginHandler_MissingFields(t *testing.T) {
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+
+	body := `{}`
+	r := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.loginHandler(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRequireAuth_ValidToken(t *testing.T) {
+	h := &Handler{AuthSecret: "test-secret-key-min-32-chars!!!!!!!!"}
+	token, _, err := auth.GenerateToken("admin", "admin", h.AuthSecret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	handler := h.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		claims := auth.UserFromContext(r.Context())
+		if claims == nil || claims.Username != "admin" {
+			t.Error("expected admin claims in context")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	r := httptest.NewRequest("GET", "/api/admin/config", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if !called {
+		t.Error("expected handler to be called")
+	}
+}
+
+func TestRequireAuth_NoHeader(t *testing.T) {
+	h := &Handler{AuthSecret: "test-secret-key-min-32-chars!!!!!!!!"}
+	handler := h.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	r := httptest.NewRequest("GET", "/api/admin/config", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestRequireAuth_BadToken(t *testing.T) {
+	h := &Handler{AuthSecret: "test-secret-key-min-32-chars!!!!!!!!"}
+	handler := h.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	r := httptest.NewRequest("GET", "/api/admin/config", nil)
+	r.Header.Set("Authorization", "Bearer garbage-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestRequireAuth_WrongSecret(t *testing.T) {
+	token, _, _ := auth.GenerateToken("admin", "admin", "different-secret-key-32-chars!!!!!!", time.Hour)
+	h := &Handler{AuthSecret: "test-secret-key-min-32-chars!!!!!!!!"}
+	handler := h.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	r := httptest.NewRequest("GET", "/api/admin/config", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandlerRegister_AdminRoutes(t *testing.T) {
+	h := setupTestHandler(nil)
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	h.CredsFile = filepath.Join(t.TempDir(), "admin.credentials")
+	hash, _ := auth.HashPassword("pass")
+	auth.SaveCredentials(h.CredsFile, "admin", hash)
+
+	r := chi.NewRouter()
+	h.Register(r)
+
+	// Login should be public (no auth)
+	body := `{"username":"admin","password":"pass"}`
+	req := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("login should be public, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

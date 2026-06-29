@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/chingjustwe/llm-interceptor/internal/auth"
+	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
 	"github.com/chingjustwe/llm-interceptor/internal/router"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
@@ -28,8 +31,11 @@ type CostCalculator func(model string, inputTokens, outputTokens int) float64
 type Handler struct {
 	store           storage.Backend
 	st              state.Backend
+	Config          *config.Config   // gateway configuration for agent info
 	KeyManager      *router.KeyManager // nil when router mode is disabled
 	CalculateCostFn CostCalculator
+	AuthSecret      string // HMAC-SHA256 key for signing admin JWT tokens
+	CredsFile       string // path to the admin credentials file
 }
 
 // NewHandler creates an API handler backed by the given storage and state backends.
@@ -47,6 +53,7 @@ func NewHandler(store storage.Backend, st state.Backend) *Handler {
 //	POST /api/keys                — generate a new API key
 //	GET  /api/keys                — list all API keys
 //	PATCH /api/keys/{id}/disable  — disable an API key
+//	GET  /api/agents/info         — agent platform integration info
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/api/requests", h.listRequests)
 	r.Get("/api/requests/export", h.exportRequests)
@@ -60,6 +67,14 @@ func (h *Handler) Register(r chi.Router) {
 	r.Post("/api/keys", h.generateKey)
 	r.Get("/api/keys", h.listKeys)
 	r.Patch("/api/keys/{id}/disable", h.disableKey)
+
+	// Agent platform integration.
+	r.Get("/api/agents/info", h.agentInfo)
+
+	// Admin console — login is unauthenticated; all other admin routes
+	// are behind the requireAuth middleware.
+	r.Post("/api/admin/login", h.loginHandler)
+	r.Mount("/api/admin", h.adminRouter())
 }
 
 // listRequests returns a paginated list of stored requests, ordered by
@@ -656,6 +671,121 @@ func (h *Handler) disableKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// agentInfo returns information about the gateway's supported protocols,
+// available models, and connection details for agent platform integration.
+func (h *Handler) agentInfo(w http.ResponseWriter, r *http.Request) {
+	var protocols []string
+	models := make([]string, 0)
+	routerEnabled := false
+
+	if h.Config != nil && h.Config.Router.Enabled {
+		routerEnabled = true
+		protocolSet := make(map[string]struct{})
+		for _, p := range h.Config.Router.Providers {
+			switch p.Name {
+			case "anthropic", "claude":
+				protocolSet["anthropic"] = struct{}{}
+			default:
+				protocolSet["openai"] = struct{}{}
+			}
+			if p.ModelGlob != "" {
+				models = append(models, p.ModelGlob)
+			}
+		}
+		for k := range protocolSet {
+			protocols = append(protocols, k)
+		}
+		sort.Strings(protocols)
+	}
+
+	if len(protocols) == 0 {
+		protocols = []string{"anthropic"}
+	}
+
+	baseURL := "http://" + "127.0.0.1:8080"
+	if h.Config != nil && h.Config.Listen != "" {
+		baseURL = "http://" + h.Config.Listen
+	}
+
+	resp := map[string]any{
+		"supported_protocols": protocols,
+		"models":              models,
+		"router_enabled":      routerEnabled,
+		"version":             "0.3.0",
+		"default_base_url":    baseURL,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// loginHandler authenticates an admin user and returns a signed JWT token.
+// POST /api/admin/login
+// Request:  {"username":"...","password":"..."}
+// Response: {"token":"...","expires_at":"..."}
+func (h *Handler) loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, `{"error":"username and password are required"}`, http.StatusBadRequest)
+		return
+	}
+	credUsername, credHash, err := auth.LoadCredentials(h.CredsFile)
+	if err != nil {
+		http.Error(w, `{"error":"server configuration error"}`, http.StatusInternalServerError)
+		return
+	}
+	if req.Username != credUsername || !auth.CheckPassword(req.Password, credHash) {
+		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		return
+	}
+	token, exp, err := auth.GenerateToken(req.Username, "admin", h.AuthSecret, 24*time.Hour)
+	if err != nil {
+		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"token":      token,
+		"expires_at": exp.Format(time.RFC3339),
+	})
+}
+
+// requireAuth is HTTP middleware that validates a Bearer JWT token from the
+// Authorization header. On success, the parsed claims are injected into the
+// request context via auth.ContextWithUser.
+func (h *Handler) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if header == "" || !strings.HasPrefix(header, "Bearer ") {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		tokenStr := strings.TrimPrefix(header, "Bearer ")
+		claims, err := auth.ValidateToken(tokenStr, h.AuthSecret)
+		if err != nil {
+			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+			return
+		}
+		ctx := auth.ContextWithUser(r.Context(), claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// adminRouter creates a chi sub-router with the requireAuth middleware. All
+// admin console endpoints (except login) should be mounted on this router.
+func (h *Handler) adminRouter() chi.Router {
+	r := chi.NewRouter()
+	r.Use(h.requireAuth)
+	return r
 }
 
 // microToDollar converts microdollars to dollars (μ$ ÷ 1,000,000).

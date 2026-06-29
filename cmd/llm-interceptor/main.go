@@ -14,12 +14,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chingjustwe/llm-interceptor/internal/api"
+	"github.com/chingjustwe/llm-interceptor/internal/auth"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/plugins"
@@ -99,6 +101,44 @@ func main() {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
+	}
+
+	// Initialize admin credentials
+	authSecret := cfg.Admin.JWTSecret
+	if authSecret == "" {
+		authSecret = auth.GenerateRandomString(32)
+		log.Println("auth: generated random JWT secret (set admin.jwt_secret in config to control)")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("failed to get home directory: %v", err)
+	}
+	credsFile := filepath.Join(home, ".llm-interceptor", "admin.credentials")
+
+	credUsername := cfg.Admin.Username
+	credPassword := cfg.Admin.Password
+	if credUsername != "" && credPassword != "" {
+		credHash, err := auth.HashPassword(credPassword)
+		if err != nil {
+			log.Fatalf("failed to hash admin password: %v", err)
+		}
+		if err := auth.SaveCredentials(credsFile, credUsername, credHash); err != nil {
+			log.Fatalf("failed to save admin credentials: %v", err)
+		}
+		log.Printf("auth: using config-provided admin credentials (user=%s)", credUsername)
+	} else if _, err := os.Stat(credsFile); err == nil {
+		log.Printf("auth: loaded admin credentials from %s", credsFile)
+	} else {
+		genUser, genPass := auth.GenerateDefaultCredentials()
+		credHash, err := auth.HashPassword(genPass)
+		if err != nil {
+			log.Fatalf("failed to hash generated password: %v", err)
+		}
+		if err := auth.SaveCredentials(credsFile, genUser, credHash); err != nil {
+			log.Fatalf("failed to save generated credentials: %v", err)
+		}
+		auth.PrintCredentialsToStdout(genUser, genPass)
 	}
 
 	// Initialize storage
@@ -268,6 +308,9 @@ func main() {
 	// API routes
 	apiHandler := api.NewHandler(store, st)
 	apiHandler.CalculateCostFn = calculateCost
+	apiHandler.Config = cfg
+	apiHandler.AuthSecret = authSecret
+	apiHandler.CredsFile = credsFile
 	if rm != nil {
 		apiHandler.KeyManager = rm.keyManager
 	}

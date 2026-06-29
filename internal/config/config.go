@@ -22,6 +22,7 @@ type Config struct {
 	StateStore   StateStoreConfig `yaml:"state_store"`
 	Plugins      PluginConfig     `yaml:"plugins"`
 	Router       RouterConfig     `yaml:"router"`
+	Admin        AdminConfig      `yaml:"admin"`
 }
 
 // PluginConfig holds configuration for all built-in plugins.
@@ -139,6 +140,16 @@ type ProviderConfig struct {
 	APIKey    string `yaml:"api_key"`
 }
 
+// AdminConfig controls the admin console authentication. If username and
+// password are left empty, the gateway generates default credentials on first
+// startup and prints them to stdout. jwt_secret is the HMAC-SHA256 key used
+// to sign admin JWT tokens; if empty, a random secret is generated.
+type AdminConfig struct {
+	Username   string `yaml:"username"`
+	Password   string `yaml:"password"`
+	JWTSecret  string `yaml:"jwt_secret"`
+}
+
 // Default returns a configuration with sensible defaults: listen on 127.0.0.1:8080,
 // proxy to Anthropic, SQLite storage at ~/.llm-interceptor/data.db, and in-memory
 // state store.
@@ -211,4 +222,10 @@ func (c *Config) StoragePath() string {
 		return ""
 	}
 	return expandHome(c.Storage.SQLite.Path)
+}
+
+// ExpandHome replaces a leading "~/" prefix with the user's home directory path.
+// Returns the original path if home directory lookup fails.
+func ExpandHome(path string) string {
+	return expandHome(path)
 }

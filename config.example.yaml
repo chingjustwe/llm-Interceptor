@@ -2,6 +2,11 @@ listen: "127.0.0.1:8080"
 upstream: "https://api.anthropic.com"
 metric_prefix: "llm_proxy."
 
+admin:
+  username: ""
+  password: ""
+  jwt_secret: ""
+
 log:
   request_body: false
   response_body: false
