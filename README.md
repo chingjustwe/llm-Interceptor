@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-brightgreen)](https://chingjustwe.github.io/llm-interceptor/)
 
+> **⚠️ Under Construction** — This project is in active early development. APIs, configuration, and behavior may change. You'll likely encounter bugs, missing features, and rough edges. Feedback and contributions are very welcome.
+
 **LLM Interceptor** is a local-first, open-source LLM gateway. It sits between your application and LLM providers (OpenAI, Anthropic, etc.), providing transparent proxying, observability (OTel), governance (budget/rate-limit/tool-policy), multi-provider routing, protocol translation, and a web UI — all in a single Go binary.
 
 ## Features
@@ -135,6 +137,21 @@ The SPA is embedded in the Go binary via `embed.FS`. During development, run `np
 | **5** | Hardening | Prometheus, alerting, perf, tests, OpenAPI | Phase 4 |
 
 See [docs/roadmap.md](docs/roadmap.md) for the full detailed plan.
+
+## Contributing
+
+Contributions are welcome! Here's how to help:
+
+- **Report bugs** — Open an issue with steps to reproduce and relevant logs.
+- **Suggest features** — Open an issue describing the use case and desired behavior.
+- **Submit code** — Fork the repo, create a feature branch, make your changes, and open a PR. Make sure `go build ./... && go vet ./... && go test ./... -v && (cd ui && npm run build)` passes. See [AGENTS.md](AGENTS.md) for project conventions.
+- **Improve docs** — Typos, clarifications, examples, and translations all help.
+
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+
+## Support
+
+If you find this project useful, please consider giving it a star ⭐ on GitHub. It helps others discover it and motivates continued development.
 
 ## License
 
