@@ -76,6 +76,44 @@ func (c *CostTracker) ConfigPrices() map[string]PriceEntry {
 	return c.configPrices
 }
 
+// ReloadConfig updates cost tracker configuration from a runtime config change.
+// The key must be "cost-tracker" and the value must contain an optional "prices"
+// map of model → {input_per_m, output_per_m}. Existing prices are preserved
+// unless explicitly overridden in the new config.
+func (c *CostTracker) ReloadConfig(key string, value []byte) error {
+	if key != "cost-tracker" {
+		return nil
+	}
+	var cfg struct {
+		Prices map[string]struct {
+			InputPerM  float64 `json:"input_per_m"`
+			OutputPerM float64 `json:"output_per_m"`
+		} `json:"prices"`
+	}
+	if err := json.Unmarshal(value, &cfg); err != nil {
+		return fmt.Errorf("cost-tracker: invalid config: %w", err)
+	}
+	if len(cfg.Prices) > 0 {
+		prices := make(map[string]PriceEntry, len(cfg.Prices))
+		for model, p := range cfg.Prices {
+			prices[model] = PriceEntry{InputPerM: p.InputPerM, OutputPerM: p.OutputPerM}
+		}
+		// Merge into the existing price table.
+		c.MergePrices(prices)
+		// Also store as config prices so they survive pricing refreshes.
+		merged := make(map[string]PriceEntry, len(c.configPrices)+len(prices))
+		for k, v := range c.configPrices {
+			merged[k] = v
+		}
+		for k, v := range prices {
+			merged[k] = v
+		}
+		c.configPrices = merged
+		log.Printf("cost: reloaded %d model prices from admin config", len(cfg.Prices))
+	}
+	return nil
+}
+
 // StartPricingRefresh begins a background goroutine that fetches model pricing
 // from the given URL every interval. Config-level price overrides (set via
 // SetConfigPrices) are re-applied after each fetch.

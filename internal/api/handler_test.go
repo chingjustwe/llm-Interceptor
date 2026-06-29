@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 type mockStore struct {
 	requests []types.StoredRequest
 	config   map[string]*types.ConfigEntry
+	audit    []types.AuditEntry
+	mu       sync.Mutex
 }
 
 func newMockStore(reqs []types.StoredRequest) *mockStore {
@@ -148,6 +151,33 @@ func (m *mockStore) ListConfig(_ context.Context) ([]types.ConfigEntry, error) {
 func (m *mockStore) DeleteConfig(_ context.Context, key string) error {
 	delete(m.config, key)
 	return nil
+}
+func (m *mockStore) SaveAuditEntry(_ context.Context, entry *types.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry.ID = int64(len(m.audit) + 1)
+	m.audit = append(m.audit, *entry)
+	return nil
+}
+func (m *mockStore) QueryAuditEntries(_ context.Context, limit, offset int) ([]types.AuditEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset >= len(m.audit) {
+		return []types.AuditEntry{}, nil
+	}
+	end := offset + limit
+	if end > len(m.audit) {
+		end = len(m.audit)
+	}
+	// Return in reverse order (most recent first)
+	result := make([]types.AuditEntry, 0, end-offset)
+	for i := len(m.audit) - 1 - offset; i >= 0 && len(result) < limit; i-- {
+		result = append(result, m.audit[i])
+	}
+	return result, nil
 }
 func (m *mockStore) Close() error                                           { return nil }
 
@@ -1078,6 +1108,58 @@ func TestConfigCRUD_Unauthenticated(t *testing.T) {
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s expected 401, got %d", path, w.Code)
 		}
+	}
+}
+
+func TestAuditLog_Endpoint(t *testing.T) {
+	dir := t.TempDir()
+	credsFile := filepath.Join(dir, "admin.credentials")
+	hash, _ := auth.HashPassword("pass")
+	auth.SaveCredentials(credsFile, "admin", hash)
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	h.CredsFile = credsFile
+
+	token, _, _ := auth.GenerateToken("admin", "admin", h.AuthSecret, time.Hour)
+
+	r := chi.NewRouter()
+	r.Post("/api/admin/login", h.loginHandler)
+	r.Mount("/api/admin", h.adminRouter())
+
+	// Make a config change to trigger audit entry
+	putBody := `{"value": {"max_cost_per_session": 2.0}}`
+	req := httptest.NewRequest("PUT", "/api/admin/config/budget", strings.NewReader(putBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT config expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Query audit log
+	req = httptest.NewRequest("GET", "/api/admin/audit", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET audit expected 200, got %d", w.Code)
+	}
+	var entries []types.AuditEntry
+	if err := json.NewDecoder(w.Body).Decode(&entries); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(entries) < 1 {
+		t.Fatal("expected at least 1 audit entry")
+	}
+	if entries[0].Action != "update" {
+		t.Errorf("expected action 'update', got %s", entries[0].Action)
+	}
+	if entries[0].TargetKey != "budget" {
+		t.Errorf("expected target_key 'budget', got %s", entries[0].TargetKey)
+	}
+	if entries[0].NewValue == nil || *entries[0].NewValue != `{"max_cost_per_session": 2.0}` {
+		t.Errorf("expected new_value to be set")
 	}
 }
 

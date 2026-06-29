@@ -7,6 +7,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"log"
 )
 
 // Dispatcher manages a list of plugins and executes them in order for each
@@ -47,6 +48,22 @@ func (d *Dispatcher) ExecuteOnResponse(ctx *ResponseContext) error {
 		}
 	}
 	return nil
+}
+
+// ReloadConfig broadcasts a configuration change to all plugins that implement
+// the ConfigReloader interface. Unknown keys and plugins that don't support
+// reload are silently skipped. Errors are logged but not returned so one
+// plugin's failure doesn't block others.
+func (d *Dispatcher) ReloadConfig(key string, value []byte) {
+	for _, p := range d.plugins {
+		cr, ok := p.(ConfigReloader)
+		if !ok {
+			continue
+		}
+		if err := cr.ReloadConfig(key, value); err != nil {
+			log.Printf("plugin %s: ReloadConfig(%q) error: %v", p.Name(), key, err)
+		}
+	}
 }
 
 // WrapContext creates a new RequestContext from a standard context, initializing

@@ -79,3 +79,11 @@ type Plugin interface {
 	OnRequest(ctx *RequestContext) (*HookResult, error)
 	OnResponse(ctx *ResponseContext) error
 }
+
+// ConfigReloader is an optional interface that a plugin can implement to
+// support runtime configuration reload via the admin API without restarting
+// the gateway. The key identifies the config section (e.g. "budget",
+// "rate-limit"), and value is the JSON-encoded configuration for that section.
+type ConfigReloader interface {
+	ReloadConfig(key string, value []byte) error
+}

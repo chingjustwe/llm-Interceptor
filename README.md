@@ -13,7 +13,7 @@
 - **Observability** — OpenTelemetry traces, metrics (token usage, latency, error rates)
 - **Governance** — Per-key budget, rate limiting, tool-use policies
 - **LLM Router** — Auto-detect provider from API key format (`sk-lli-*`), multi-tenant key management (bcrypt), protocol translation (Anthropic ↔ OpenAI)
-- **Web UI** — Visual dashboard for requests, sessions, cost, and API key management
+- **Web UI** — Visual dashboard for requests, sessions, cost, API key management, and agent integration setup (one-click config for Claude Code, Cline, Aider, etc.)
 - **Dual Storage** — SQLite (dev/single-node) or PostgreSQL (production)
 - **Dual State** — In-memory (dev) or Redis (production)
 - **Config-driven** — Single YAML file for all settings

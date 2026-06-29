@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/chingjustwe/llm-interceptor/internal/auth"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
+	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
 	"github.com/chingjustwe/llm-interceptor/internal/router"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
@@ -21,6 +23,23 @@ import (
 	"github.com/chingjustwe/llm-interceptor/internal/types"
 	"github.com/go-chi/chi/v5"
 )
+
+// AuditWriter manages audit log creation for config changes. It is a thin
+// helper so the handler methods don't grow inline audit logic.
+func (h *Handler) writeAudit(ctx context.Context, action, targetKey string, oldVal, newVal *string, performedBy string) {
+	entry := &types.AuditEntry{
+		Action:      action,
+		TargetKey:   targetKey,
+		OldValue:    oldVal,
+		NewValue:    newVal,
+		PerformedBy: performedBy,
+		CreatedAt:   time.Now().UnixMilli(),
+	}
+	if err := h.store.SaveAuditEntry(ctx, entry); err != nil {
+		// Audit failures are non-fatal — log and continue.
+	_ = err
+	}
+}
 
 // ConfigChangeEvent is published via SSE when a runtime config value is updated.
 type ConfigChangeEvent struct {
@@ -44,6 +63,7 @@ type Handler struct {
 	AuthSecret      string // HMAC-SHA256 key for signing admin JWT tokens
 	CredsFile       string // path to the admin credentials file
 	Broker          *SSEBroker // for publishing config change events (optional)
+	Dispatcher      *plugin.Dispatcher // for triggering plugin config reloads (optional)
 }
 
 // NewHandler creates an API handler backed by the given storage and state backends.
@@ -787,6 +807,14 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 	if claims != nil {
 		updatedBy = claims.Username
 	}
+
+	// Read old value for audit trail before overwriting.
+	var oldValueStr *string
+	if oldEntry, err := h.store.GetConfig(r.Context(), key); err == nil && oldEntry != nil {
+		s := string(oldEntry.Value)
+		oldValueStr = &s
+	}
+
 	entry := &types.ConfigEntry{
 		Key:       key,
 		Value:     req.Value,
@@ -796,6 +824,13 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.SaveConfig(r.Context(), entry); err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
+	}
+	// Audit trail and plugin reload are best-effort.
+	newValStr := string(req.Value)
+	h.writeAudit(r.Context(), "update", key, oldValueStr, &newValStr, updatedBy)
+	// Notify plugins of the config change so they can update without restart.
+	if h.Dispatcher != nil {
+		h.Dispatcher.ReloadConfig(key, req.Value)
 	}
 	// Publish config change event via SSE if broker is available.
 	if h.Broker != nil {
@@ -821,11 +856,21 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	if claims != nil {
 		updatedBy = claims.Username
 	}
-	// Read old value before deleting (for audit, will be used in Step 5).
+
+	// Read old value before deleting for audit trail.
+	var oldValueStr *string
+	if oldEntry, err := h.store.GetConfig(r.Context(), key); err == nil && oldEntry != nil {
+		s := string(oldEntry.Value)
+		oldValueStr = &s
+	}
+
 	if err := h.store.DeleteConfig(r.Context(), key); err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
+
+	h.writeAudit(r.Context(), "delete", key, oldValueStr, nil, updatedBy)
+
 	// Publish config change event via SSE if broker is available.
 	if h.Broker != nil {
 		h.Broker.Publish(ConfigChangeEvent{
@@ -834,10 +879,28 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: time.Now().UnixMilli(),
 		})
 	}
-	// Track deletion in context metadata for future audit logging.
-	_ = updatedBy
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// listAudit returns paginated audit log entries.
+func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	entries, err := h.store.QueryAuditEntries(r.Context(), limit, offset)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []types.AuditEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
 }
 
 // loginHandler authenticates an admin user and returns a signed JWT token.
@@ -910,6 +973,9 @@ func (h *Handler) adminRouter() chi.Router {
 	r.Get("/config/{key}", h.getConfig)
 	r.Put("/config/{key}", h.putConfig)
 	r.Delete("/config/{key}", h.deleteConfig)
+
+	// Audit log
+	r.Get("/audit", h.listAudit)
 
 	return r
 }

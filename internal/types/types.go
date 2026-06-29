@@ -56,6 +56,19 @@ type StoredRequest struct {
 	RequestParams   *string  `json:"request_params,omitempty"`
 }
 
+// AuditEntry records a configuration change made via the admin console. It
+// captures what was changed, the old and new values, who made the change,
+// and when it occurred.
+type AuditEntry struct {
+	ID          int64   `json:"id"`
+	Action      string  `json:"action"`       // "create", "update", "delete"
+	TargetKey   string  `json:"target_key"`   // config key that was changed
+	OldValue    *string `json:"old_value,omitempty"`
+	NewValue    *string `json:"new_value,omitempty"`
+	PerformedBy string  `json:"performed_by"`
+	CreatedAt   int64   `json:"created_at"`
+}
+
 // ConfigEntry represents a single runtime configuration entry stored in the
 // database. Values are JSON-encoded for flexibility. The UpdatedBy field records
 // which admin user made the change, sourced from JWT claims.

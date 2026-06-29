@@ -4,6 +4,8 @@
 package plugins
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
@@ -46,6 +48,35 @@ func NewToolPolicyPlugin(blocked, allowed []string) *ToolPolicyPlugin {
 
 // Name returns "tool-policy" as the plugin identifier.
 func (t *ToolPolicyPlugin) Name() string { return "tool-policy" }
+
+// ReloadConfig updates blocked/allowed tool lists from a runtime config change.
+// The key must be "tool-policy" and the value must be a JSON object with
+// optional "blocked_tools" and/or "allowed_tools" string arrays.
+func (t *ToolPolicyPlugin) ReloadConfig(key string, value []byte) error {
+	if key != "tool-policy" {
+		return nil
+	}
+	var cfg struct {
+		Blocked []string `json:"blocked_tools"`
+		Allowed []string `json:"allowed_tools"`
+	}
+	if err := json.Unmarshal(value, &cfg); err != nil {
+		return fmt.Errorf("tool-policy: invalid config: %w", err)
+	}
+	t.blockedTools = make(map[string]bool, len(cfg.Blocked))
+	for _, b := range cfg.Blocked {
+		t.blockedTools[strings.ToLower(b)] = true
+	}
+	t.allowedTools = make(map[string]bool, len(cfg.Allowed))
+	t.mode = "blocklist"
+	if len(cfg.Allowed) > 0 {
+		t.mode = "allowlist"
+		for _, a := range cfg.Allowed {
+			t.allowedTools[strings.ToLower(a)] = true
+		}
+	}
+	return nil
+}
 
 // OnRequest is a no-op — tool blocking happens at the proxy layer, which
 // intercepts the SSE stream before it reaches the client. Blocked tool_use

@@ -43,5 +43,9 @@ type Backend interface {
 	ListConfig(ctx context.Context) ([]types.ConfigEntry, error)
 	DeleteConfig(ctx context.Context, key string) error
 
+	// Audit log
+	SaveAuditEntry(ctx context.Context, entry *types.AuditEntry) error
+	QueryAuditEntries(ctx context.Context, limit, offset int) ([]types.AuditEntry, error)
+
 	Close() error
 }

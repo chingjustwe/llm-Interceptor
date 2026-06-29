@@ -71,6 +71,10 @@ func (m *mockStorage) SaveConfig(_ context.Context, _ *types.ConfigEntry) error 
 func (m *mockStorage) GetConfig(_ context.Context, _ string) (*types.ConfigEntry, error) { return nil, nil }
 func (m *mockStorage) ListConfig(_ context.Context) ([]types.ConfigEntry, error) { return nil, nil }
 func (m *mockStorage) DeleteConfig(_ context.Context, _ string) error { return nil }
+func (m *mockStorage) SaveAuditEntry(_ context.Context, _ *types.AuditEntry) error { return nil }
+func (m *mockStorage) QueryAuditEntries(_ context.Context, limit, offset int) ([]types.AuditEntry, error) {
+	return nil, nil
+}
 func (m *mockStorage) Close() error { return nil }
 
 func TestKeyManager_GenerateAndValidate(t *testing.T) {

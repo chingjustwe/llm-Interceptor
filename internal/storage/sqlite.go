@@ -65,6 +65,17 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 			updated_at INTEGER NOT NULL,
 			updated_by TEXT NOT NULL DEFAULT ''
 		);
+
+		CREATE TABLE IF NOT EXISTS audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			target_key TEXT NOT NULL,
+			old_value TEXT,
+			new_value TEXT,
+			performed_by TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
@@ -424,6 +435,49 @@ func (s *SQLiteBackend) DeleteConfig(ctx context.Context, key string) error {
 		return fmt.Errorf("delete config: %w", err)
 	}
 	return nil
+}
+
+// SaveAuditEntry inserts a new audit log entry.
+func (s *SQLiteBackend) SaveAuditEntry(ctx context.Context, entry *types.AuditEntry) error {
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit_log (action, target_key, old_value, new_value, performed_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		entry.Action, entry.TargetKey, entry.OldValue, entry.NewValue, entry.PerformedBy, entry.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save audit: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	entry.ID = id
+	return nil
+}
+
+// QueryAuditEntries returns audit log entries ordered by creation time
+// descending, with pagination via limit and offset.
+func (s *SQLiteBackend) QueryAuditEntries(ctx context.Context, limit, offset int) ([]types.AuditEntry, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, action, target_key, old_value, new_value, performed_by, created_at
+		 FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query audit: %w", err)
+	}
+	defer rows.Close()
+	var entries []types.AuditEntry
+	for rows.Next() {
+		var e types.AuditEntry
+		if err := rows.Scan(&e.ID, &e.Action, &e.TargetKey, &e.OldValue, &e.NewValue, &e.PerformedBy, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan audit: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit: %w", err)
+	}
+	return entries, nil
 }
 
 // Close shuts down the database connection.

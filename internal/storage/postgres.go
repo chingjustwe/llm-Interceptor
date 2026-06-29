@@ -74,6 +74,17 @@ func NewPostgres(connString string) (*PostgresBackend, error) {
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_by TEXT NOT NULL DEFAULT ''
 		);
+
+		CREATE TABLE IF NOT EXISTS audit_log (
+			id BIGSERIAL PRIMARY KEY,
+			action TEXT NOT NULL,
+			target_key TEXT NOT NULL,
+			old_value TEXT,
+			new_value TEXT,
+			performed_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 	`); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("create table: %w", err)
@@ -441,6 +452,50 @@ func (p *PostgresBackend) DeleteConfig(ctx context.Context, key string) error {
 		return fmt.Errorf("delete config: %w", err)
 	}
 	return nil
+}
+
+// SaveAuditEntry inserts a new audit log entry and sets its ID from the
+// auto-generated sequence.
+func (p *PostgresBackend) SaveAuditEntry(ctx context.Context, entry *types.AuditEntry) error {
+	err := p.pool.QueryRow(ctx,
+		`INSERT INTO audit_log (action, target_key, old_value, new_value, performed_by, created_at)
+		 VALUES ($1, $2, $3, $4, $5, TO_TIMESTAMP($6::double precision / 1000))
+		 RETURNING id`,
+		entry.Action, entry.TargetKey, entry.OldValue, entry.NewValue, entry.PerformedBy, entry.CreatedAt,
+	).Scan(&entry.ID)
+	if err != nil {
+		return fmt.Errorf("save audit: %w", err)
+	}
+	return nil
+}
+
+// QueryAuditEntries returns audit log entries ordered by creation time
+// descending, with pagination via limit and offset.
+func (p *PostgresBackend) QueryAuditEntries(ctx context.Context, limit, offset int) ([]types.AuditEntry, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, action, target_key, old_value, new_value, performed_by,
+		 EXTRACT(EPOCH FROM created_at)::bigint * 1000
+		 FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query audit: %w", err)
+	}
+	defer rows.Close()
+	var entries []types.AuditEntry
+	for rows.Next() {
+		var e types.AuditEntry
+		if err := rows.Scan(&e.ID, &e.Action, &e.TargetKey, &e.OldValue, &e.NewValue, &e.PerformedBy, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan audit: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit: %w", err)
+	}
+	return entries, nil
 }
 
 // Close shuts down the PostgreSQL connection pool.

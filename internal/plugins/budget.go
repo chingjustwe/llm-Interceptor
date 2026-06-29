@@ -4,6 +4,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,25 @@ func NewBudgetPlugin(st state.Backend, maxPerSession, maxPerDay float64) *Budget
 
 // Name returns "budget" as the plugin identifier.
 func (b *BudgetPlugin) Name() string { return "budget" }
+
+// ReloadConfig updates budget limits from a runtime configuration change.
+// The key must be "budget" and the value must be a JSON object with optional
+// max_cost_per_session and/or max_cost_per_day fields.
+func (b *BudgetPlugin) ReloadConfig(key string, value []byte) error {
+	if key != "budget" {
+		return nil
+	}
+	var cfg struct {
+		MaxPerSession float64 `json:"max_cost_per_session"`
+		MaxPerDay     float64 `json:"max_cost_per_day"`
+	}
+	if err := json.Unmarshal(value, &cfg); err != nil {
+		return fmt.Errorf("budget: invalid config: %w", err)
+	}
+	b.maxPerSession = cfg.MaxPerSession
+	b.maxPerDay = cfg.MaxPerDay
+	return nil
+}
 
 // OnRequest checks accumulated costs against configured budget limits. Costs
 // are stored in the state backend as microdollars by the CostTracker plugin.

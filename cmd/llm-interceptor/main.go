@@ -318,18 +318,21 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 
+	// SSE event broker for live updates to the web UI.
+	broker := api.NewSSEBroker()
+
 	// API routes
 	apiHandler := api.NewHandler(store, st)
 	apiHandler.CalculateCostFn = calculateCost
 	apiHandler.Config = cfg
 	apiHandler.AuthSecret = authSecret
 	apiHandler.CredsFile = credsFile
+	apiHandler.Dispatcher = disp
+	apiHandler.Broker = broker
 	if rm != nil {
 		apiHandler.KeyManager = rm.keyManager
 	}
 	apiHandler.Register(r)
-
-	broker := api.NewSSEBroker()
 	r.Get("/api/events", broker.ServeHTTP)
 
 	llmHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

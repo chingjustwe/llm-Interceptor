@@ -148,3 +148,70 @@ func TestSQLiteBackend_SaveAndQueryWithNewFields(t *testing.T) {
 		t.Fatalf("expected 1 result for status filter, got %d", len(results))
 	}
 }
+
+func TestSQLiteBackend_AuditLog(t *testing.T) {
+	s, err := NewSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLite failed: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Save an audit entry
+	val := `{"max_cost_per_session":1.0}`
+	entry := &types.AuditEntry{
+		Action:      "update",
+		TargetKey:   "budget",
+		OldValue:    nil,
+		NewValue:    &val,
+		PerformedBy: "admin_test",
+		CreatedAt:   1000,
+	}
+	if err := s.SaveAuditEntry(ctx, entry); err != nil {
+		t.Fatalf("SaveAuditEntry failed: %v", err)
+	}
+	if entry.ID == 0 {
+		t.Fatal("expected non-zero ID after save")
+	}
+
+	// Save another entry
+	val2 := `{"requests_per_minute":30}`
+	entry2 := &types.AuditEntry{
+		Action:      "delete",
+		TargetKey:   "rate-limit",
+		OldValue:    &val2,
+		NewValue:    nil,
+		PerformedBy: "admin_test",
+		CreatedAt:   2000,
+	}
+	if err := s.SaveAuditEntry(ctx, entry2); err != nil {
+		t.Fatalf("SaveAuditEntry failed: %v", err)
+	}
+
+	// Query — most recent first
+	entries, err := s.QueryAuditEntries(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEntries failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Action != "delete" {
+		t.Errorf("expected most recent action 'delete', got %s", entries[0].Action)
+	}
+	if entries[1].Action != "update" {
+		t.Errorf("expected second action 'update', got %s", entries[1].Action)
+	}
+
+	// Pagination: skip 1, get 1
+	entries, err = s.QueryAuditEntries(ctx, 1, 1)
+	if err != nil {
+		t.Fatalf("QueryAuditEntries paginated failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry with limit=1 offset=1, got %d", len(entries))
+	}
+	if entries[0].Action != "update" {
+		t.Errorf("expected offset-1 action 'update', got %s", entries[0].Action)
+	}
+}

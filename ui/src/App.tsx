@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AuthProvider, useAuth } from './auth'
+import AdminLogin from './AdminLogin'
+import AdminConfig from './AdminConfig'
 import RequestsList from './RequestsList'
 import SessionsList from './SessionsList'
 import CostDashboard from './CostDashboard'
@@ -6,10 +9,11 @@ import KeyManagement from './KeyManagement'
 import DashboardPage from './DashboardPage'
 import ErrorAnalysis from './ErrorAnalysis'
 import ModelAnalytics from './ModelAnalytics'
+import AgentIntegration from './AgentIntegration'
 import Toast from './Toast'
 
 type ToastData = { id: string; model: string; message: string }
-type View = 'dashboard' | 'requests' | 'sessions' | 'cost' | 'keys' | 'errors' | 'models'
+type View = 'dashboard' | 'requests' | 'sessions' | 'cost' | 'keys' | 'errors' | 'models' | 'agents' | 'admin'
 
 const BoltIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -60,12 +64,25 @@ const ActivityIcon = () => (
   </svg>
 )
 
-const SunIcon = () => (
+const TerminalIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
-    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-    <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
-    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    <polyline points="4 17 10 11 4 5" />
+    <line x1="12" y1="19" x2="20" y2="19" />
+  </svg>
+)
+
+const SettingsIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+)
+
+const LogoutIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
   </svg>
 )
 
@@ -77,6 +94,8 @@ const views: Record<View, { label: string; icon: JSX.Element; component: React.C
   keys: { label: 'Keys', icon: <KeyIcon />, component: KeyManagement },
   errors: { label: 'Errors', icon: <AlertIcon />, component: ErrorAnalysis },
   models: { label: 'Models', icon: <ChartIcon />, component: ModelAnalytics },
+  agents: { label: 'Agents', icon: <TerminalIcon />, component: AgentIntegration },
+  admin: { label: 'Admin', icon: <SettingsIcon />, component: AdminConfig },
 }
 
 const MoonIcon = () => (
@@ -85,7 +104,8 @@ const MoonIcon = () => (
   </svg>
 )
 
-export default function App() {
+function AppContent() {
+  const { token, username, logout } = useAuth()
   const [activeView, setActiveView] = useState<View>('dashboard')
   const [toasts, setToasts] = useState<ToastData[]>([])
   const [connected, setConnected] = useState(false)
@@ -122,6 +142,10 @@ export default function App() {
     es.onerror = () => setConnected(false)
     return () => es.close()
   }, [])
+
+  if (!token) {
+    return <AdminLogin />
+  }
 
   const ActivePage = views[activeView].component
 
@@ -172,6 +196,14 @@ export default function App() {
             <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse-dot' : 'bg-rose-500'}`} />
             <span className="text-[11px] text-zinc-500">{connected ? 'Live' : 'Disconnected'}</span>
           </div>
+          {username && (
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-zinc-600">{username}</span>
+              <button onClick={logout} className="text-zinc-500 hover:text-rose-400 transition-colors" title="Logout">
+                <LogoutIcon />
+              </button>
+            </div>
+          )}
           <p className="text-[11px] text-zinc-600">v0.2.0</p>
         </div>
       </nav>
@@ -192,3 +224,20 @@ export default function App() {
     </div>
   )
 }
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  )
+}
+
+const SunIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
+    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+    <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
+    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+  </svg>
+)

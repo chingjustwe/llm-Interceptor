@@ -5,6 +5,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -34,6 +35,25 @@ func NewRateLimitPlugin(st state.Backend, reqPerMin, tokPerMin int) *RateLimitPl
 
 // Name returns "ratelimit" as the plugin identifier.
 func (r *RateLimitPlugin) Name() string { return "ratelimit" }
+
+// ReloadConfig updates rate limits from a runtime configuration change.
+// The key must be "rate-limit" and the value must be a JSON object with
+// optional requests_per_minute and/or tokens_per_minute fields.
+func (r *RateLimitPlugin) ReloadConfig(key string, value []byte) error {
+	if key != "rate-limit" {
+		return nil
+	}
+	var cfg struct {
+		ReqPerMin int `json:"requests_per_minute"`
+		TokPerMin int `json:"tokens_per_minute"`
+	}
+	if err := json.Unmarshal(value, &cfg); err != nil {
+		return fmt.Errorf("ratelimit: invalid config: %w", err)
+	}
+	r.reqPerMin = cfg.ReqPerMin
+	r.tokPerMin = cfg.TokPerMin
+	return nil
+}
 
 // OnRequest checks both request count and token count against per-minute
 // limits. Uses IncrementWithTTL with a 60-second sliding window for requests
