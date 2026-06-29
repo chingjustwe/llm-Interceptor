@@ -2,6 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.26.3-blue)](https://go.dev/dl/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-brightgreen)](https://chingjustwe.github.io/llm-interceptor/)
 
 **LLM Interceptor** is a local-first, open-source LLM gateway. It sits between your application and LLM providers (OpenAI, Anthropic, etc.), providing transparent proxying, observability (OTel), governance (budget/rate-limit/tool-policy), multi-provider routing, protocol translation, and a web UI — all in a single Go binary.
 

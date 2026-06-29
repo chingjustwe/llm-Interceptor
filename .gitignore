@@ -49,3 +49,9 @@ test-results/
 
 # Python cache
 __pycache__/
+
+# VitePress cache and build output
+website/.vitepress/cache/
+website/.vitepress/dist/
+
+tmp.md
